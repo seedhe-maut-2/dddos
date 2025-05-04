@@ -12,9 +12,9 @@ admin_id = {"8167507955"}
 USER_FILE = "users.txt"
 USER_TIME_LIMITS = "user_limits.txt"
 LOG_FILE = "attack_logs.txt"
-COOLDOWN_TIME = 300  # 5 minutes
-MAX_ATTACK_TIME = 180  # 3 minutes
-IMAGE_URL = "https://t.me/gggkkkggggiii/8"
+COOLDOWN_TIME = 600  # 5 minutes
+MAX_ATTACK_TIME = 240  # 3 minutes
+IMAGE_URL = "https://t.me/gggkkkggggiii/9"
 
 # Data storage
 user_attack_data = {}
