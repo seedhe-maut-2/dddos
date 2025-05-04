@@ -9,7 +9,7 @@ from threading import Lock
 
 # Bot configuration
 bot = telebot.TeleBot('7974098970:AAGiPoFmcmvrZZ1YqzhbMqaOOxd23CaPocc')
-admin_id = {"6525686565,7017469802"}
+admin_ids = ["6525686565", "7017469802"]  # Fixed admin IDs as list of strings
 USER_FILE = "users.txt"
 USER_TIME_LIMITS = "user_limits.txt"
 LOG_FILE = "attack_logs.txt"
@@ -105,7 +105,7 @@ def get_active_attack_info():
 @bot.message_handler(commands=['start'])
 def start_command(message):
     caption = """
-🚀 *Welcome to Ansh  DDoS Bot* 🚀
+🚀 *Welcome to Ansh DDoS Bot* 🚀
 
 *Available Commands:*
 /maut <ip> <port> <time> - Start attack
@@ -296,7 +296,7 @@ def handle_buttons(call):
 @bot.message_handler(commands=['add'])
 def add_user(message):
     user_id = str(message.chat.id)
-    if user_id not in admin_id:
+    if user_id not in admin_ids:  # Fixed admin check
         return bot.reply_to(message, "❌ Admin only command.")
     
     try:
@@ -336,7 +336,7 @@ def add_user(message):
 @bot.message_handler(commands=['remove'])
 def remove_user(message):
     user_id = str(message.chat.id)
-    if user_id not in admin_id:
+    if user_id not in admin_ids:  # Fixed admin check
         return bot.reply_to(message, "❌ Admin only command.")
     
     try:
@@ -355,7 +355,7 @@ def remove_user(message):
 @bot.message_handler(commands=['allusers'])
 def list_users(message):
     user_id = str(message.chat.id)
-    if user_id not in admin_id:
+    if user_id not in admin_ids:  # Fixed admin check
         return bot.reply_to(message, "❌ Admin only command.")
     
     if not allowed_user_ids:
@@ -383,7 +383,7 @@ def list_users(message):
 @bot.message_handler(commands=['logs'])
 def show_logs(message):
     user_id = str(message.chat.id)
-    if user_id not in admin_id:
+    if user_id not in admin_ids:  # Fixed admin check
         return bot.reply_to(message, "❌ Admin only command.")
     
     if not os.path.exists(LOG_FILE):
@@ -395,7 +395,7 @@ def show_logs(message):
 @bot.message_handler(commands=['clearlogs'])
 def clear_logs(message):
     user_id = str(message.chat.id)
-    if user_id not in admin_id:
+    if user_id not in admin_ids:  # Fixed admin check
         return bot.reply_to(message, "❌ Admin only command.")
     
     try:
