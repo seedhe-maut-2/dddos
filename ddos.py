@@ -8,7 +8,7 @@ import re
 from threading import Lock
 
 # Bot configuration
-bot = telebot.TeleBot(':7974098970:AAGiPoFmcmvrZZ1YqzhbMqaOOxd23CaPocc')
+bot = telebot.TeleBot('7974098970:AAGiPoFmcmvrZZ1YqzhbMqaOOxd23CaPocc')
 admin_id = {"6525686565,7017469802"}
 USER_FILE = "users.txt"
 USER_TIME_LIMITS = "user_limits.txt"
