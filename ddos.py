@@ -8,14 +8,14 @@ import re
 from threading import Lock
 
 # Bot configuration
-bot = telebot.TeleBot('7970310406:AAGh47IMJxhCPwqTDe_3z3PCvXugf7Y3yYE')
-admin_id = {"8167507955"}
+bot = telebot.TeleBot(':7974098970:AAGiPoFmcmvrZZ1YqzhbMqaOOxd23CaPocc')
+admin_id = {"6525686565,7017469802"}
 USER_FILE = "users.txt"
 USER_TIME_LIMITS = "user_limits.txt"
 LOG_FILE = "attack_logs.txt"
-COOLDOWN_TIME = 600  # 5 minutes
-MAX_ATTACK_TIME = 240  # 3 minutes
-IMAGE_URL = "https://t.me/gggkkkggggiii/9"
+COOLDOWN_TIME = 400  # 5 minutes
+MAX_ATTACK_TIME = 200  # 3 minutes
+IMAGE_URL = "https://t.me/gggkkkggggiii/10"
 
 # Data storage
 user_attack_data = {}
@@ -105,7 +105,7 @@ def get_active_attack_info():
 @bot.message_handler(commands=['start'])
 def start_command(message):
     caption = """
-🚀 *Welcome to MAUT DDoS Bot* 🚀
+🚀 *Welcome to Ansh  DDoS Bot* 🚀
 
 *Available Commands:*
 /maut <ip> <port> <time> - Start attack
@@ -138,7 +138,7 @@ def start_command(message):
 def handle_attack_command(message):
     user_id = str(message.chat.id)
     if user_id not in allowed_user_ids:
-        return bot.reply_to(message, "❌ Access denied. `@seedhe_maut_bot`.")
+        return bot.reply_to(message, "❌ Access denied. `@IN_272`.")
     
     # Check if another attack is active
     active_info = get_active_attack_info()
@@ -242,7 +242,7 @@ def handle_buttons(call):
                      f"🌐 Target: `{data['ip']}`\n"
                      f"🔌 Port: `{data['port']}`\n"
                      f"⏱ Duration: `{data['time']}`s\n\n"
-                     f"[⚡ Powered by @seedhe_maut_bot](https://t.me/seedhe_maut_bot)",
+                     f"[⚡ Powered by @@IN_272](tg://openmessage?user_id=6525686565)",
                 parse_mode="Markdown"
             )
             
@@ -428,7 +428,7 @@ def my_logs(message):
 @bot.message_handler(commands=['help'])
 def help_command(message):
     help_text = """
-🛠 *MAUT Bot Help* 🛠
+🛠 *Ansh Bot Help* 🛠
 
 *User Commands:*
 /maut <ip> <port> <time> - Start attack
