@@ -97,9 +97,12 @@ def remove_active_attack(user_id):
         if user_id in active_attacks:
             if user_id in processes:
                 try:
-                    processes[user_id].terminate()
-                except:
-                    pass
+                    # Kill the process group to ensure all child processes are terminated
+                    os.killpg(os.getpgid(processes[user_id].pid), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass  # Process already terminated
+                except Exception as e:
+                    print(f"Error terminating process: {e}")
                 del processes[user_id]
             del active_attacks[user_id]
 
@@ -287,8 +290,10 @@ def handle_buttons(call):
         
         data = user_attack_data[user_id]
         try:
-            # Execute attack
-            process = subprocess.Popen(f"./maut {data['ip']} {data['port']} {data['time']} 900", shell=True)
+            # Execute attack - create new process group
+            process = subprocess.Popen(f"./maut {data['ip']} {data['port']} {data['time']} 900", 
+                                     shell=True, 
+                                     preexec_fn=os.setsid)
             
             # Mark attack as active
             add_active_attack(user_id, int(data['time']), process)
@@ -404,7 +409,7 @@ def remove_user(message):
         if user_to_remove in user_time_limits:
             del user_time_limits[user_to_remove]
         save_users()
-        bot.reply_to(message, f"✅ User {user_to_remove} removed.")
+        bot.reply_to_message(message, f"✅ User {user_to_remove} removed.")
     except:
         bot.reply_to(message, "❌ Usage: /remove <user_id>")
 
