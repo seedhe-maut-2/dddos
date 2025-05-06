@@ -9,7 +9,7 @@ from threading import Lock
 import sqlite3
 
 # Bot configuration
-bot = telebot.TeleBot('8012969135:AAEOvqxJfRqr_iU_KMtVjIyKH9GRt7bwBo4')
+bot = telebot.TeleBot('7302957461:AAGf-kmGQqd7lvTIk-7F6jiWlTS1LtiwrKQ')
 admin_id = {"8167507955"}  # Add more admin IDs as needed
 DB_FILE = "maut_bot.db"
 LOG_FILE = "attack_logs.txt"
@@ -271,9 +271,7 @@ def send_channel_join_message(chat_id):
     
     bot.send_message(
         chat_id,
-        "⚠️ You must join our channel to use this bot:\n\n"
-        f"{CHANNEL_LINK}\n\n"
-        "After joining, click the button below to verify.",
+        "⚠️ You must join our channel to use this bot After joining, click the button below to verify.",
         reply_markup=markup
     )
 
