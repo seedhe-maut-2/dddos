@@ -507,6 +507,202 @@ def update_countdown(user_id):
             print(f"Error in countdown thread: {e}")
             break
 
+def add_user(message):
+    """Add a new authorized user"""
+    user_id = str(message.chat.id)
+    if user_id not in admin_id:
+        return bot.reply_to(message, "❌ Admin only command.")
+    
+    try:
+        args = message.text.split(maxsplit=2)
+        if len(args) < 3:
+            return bot.reply_to(message, "❌ Usage: /add <user_id> <time_limit>\nExample: /add 123456 1day2hours")
+        
+        new_user = args[1].strip()
+        time_limit = args[2].strip()
+        
+        if not new_user.isdigit():
+            return bot.reply_to(message, "❌ User ID must be numeric")
+            
+        if new_user in allowed_user_ids:
+            return bot.reply_to(message, "ℹ️ User already exists.")
+        
+        limit_seconds = parse_time_input(time_limit)
+        if not limit_seconds:
+            return bot.reply_to(message, "❌ Invalid time format. Use like: 1day, 2hours30min")
+        
+        expiry_timestamp = time.time() + limit_seconds
+        user_time_limits[new_user] = (limit_seconds, expiry_timestamp)
+        allowed_user_ids.append(new_user)
+        save_users()
+        
+        # Format time for response
+        days = limit_seconds // 86400
+        hours = (limit_seconds % 86400) // 3600
+        minutes = (limit_seconds % 3600) // 60
+        
+        time_str = []
+        if days: time_str.append(f"{days} day{'s' if days>1 else ''}")
+        if hours: time_str.append(f"{hours} hour{'s' if hours>1 else ''}")
+        if minutes: time_str.append(f"{minutes} minute{'s' if minutes>1 else ''}")
+        
+        bot.reply_to(message, f"✅ User {new_user} added with limit: {' '.join(time_str)}")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}\nUsage: /add <user_id> <time_limit>\nExample: /add 123456 1day2hours")
+
+def remove_user(message):
+    """Remove an authorized user"""
+    user_id = str(message.chat.id)
+    if user_id not in admin_id:
+        return bot.reply_to(message, "❌ Admin only command.")
+    
+    try:
+        args = message.text.split()
+        if len(args) < 2:
+            return bot.reply_to(message, "❌ Usage: /remove <user_id>")
+            
+        user_to_remove = args[1].strip()
+        
+        if not user_to_remove.isdigit():
+            return bot.reply_to(message, "❌ User ID must be numeric")
+        
+        if user_to_remove not in allowed_user_ids:
+            return bot.reply_to(message, "❌ User not found.")
+        
+        allowed_user_ids.remove(user_to_remove)
+        if user_to_remove in user_time_limits:
+            del user_time_limits[user_to_remove]
+        save_users()
+        bot.reply_to(message, f"✅ User {user_to_remove} removed.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}\nUsage: /remove <user_id>")
+
+def list_users(message):
+    """List all authorized users"""
+    user_id = str(message.chat.id)
+    if user_id not in admin_id:
+        return bot.reply_to(message, "❌ Admin only command.")
+    
+    if not allowed_user_ids:
+        return bot.reply_to(message, "ℹ️ No users found.")
+    
+    users_list = []
+    now = time.time()
+    
+    for user in allowed_user_ids:
+        if user in user_time_limits:
+            limit_sec, expiry = user_time_limits[user]
+            if now < expiry:
+                remaining = expiry - now
+                days = int(remaining // 86400)
+                hours = int((remaining % 86400) // 3600)
+                mins = int((remaining % 3600) // 60)
+                users_list.append(f"🟢 {user} (Expires in: {days}d {hours}h {mins}m)")
+            else:
+                users_list.append(f"🔴 {user} (Expired)")
+        else:
+            users_list.append(f"🟡 {user} (No limit)")
+    
+    bot.reply_to(message, "👥 Authorized Users:\n\n" + "\n".join(users_list))
+
+def show_logs(message):
+    """Show attack logs"""
+    user_id = str(message.chat.id)
+    if user_id not in admin_id:
+        return bot.reply_to(message, "❌ Admin only command.")
+    
+    if not os.path.exists(LOG_FILE):
+        return bot.reply_to(message, "ℹ️ No logs available.")
+    
+    try:
+        # Read last MAX_LOG_LINES lines
+        with open(LOG_FILE, "r") as f:
+            lines = f.readlines()[-MAX_LOG_LINES:]
+        
+        if not lines:
+            return bot.reply_to(message, "ℹ️ No logs available.")
+        
+        # Send logs in chunks to avoid message length limits
+        chunk_size = 20
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i+chunk_size]
+            bot.send_message(message.chat.id, "📜 Attack Logs:\n\n" + "".join(chunk))
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error sending logs: {str(e)}")
+
+def clear_logs(message):
+    """Clear attack logs"""
+    user_id = str(message.chat.id)
+    if user_id not in admin_id:
+        return bot.reply_to(message, "❌ Admin only command.")
+    
+    try:
+        open(LOG_FILE, "w").close()
+        bot.reply_to(message, "✅ Logs cleared.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error clearing logs: {str(e)}")
+
+def my_logs(message):
+    """Show user's attack logs"""
+    user_id = str(message.chat.id)
+    if user_id not in allowed_user_ids:
+        return bot.reply_to(message, "❌ Access denied.")
+    
+    if not os.path.exists(LOG_FILE):
+        return bot.reply_to(message, "ℹ️ No attack history.")
+    
+    try:
+        user_logs = []
+        with open(LOG_FILE, "r") as f:
+            for line in f:
+                if f"UserID:{user_id}" in line:
+                    user_logs.append(line)
+        
+        if not user_logs:
+            return bot.reply_to(message, "ℹ️ No attacks found in your history.")
+        
+        # Show only the last 10 attacks
+        bot.reply_to(message, f"📜 Your Attack History (last 10):\n\n" + "".join(user_logs[-10:]))
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error reading logs: {str(e)}")
+
+def help_command(message):
+    """Show help information"""
+    help_text = """
+🛠 *MAUT Bot Help* 🛠
+
+*User Commands:*
+/maut <ip> <port> <time> - Start attack
+/mylogs - View your history
+/rules - Usage guidelines
+
+*Admin Commands:*
+/add <user_id> <time> - Add user
+/remove <user_id> - Remove user
+/allusers - List users
+/logs - View all logs
+/clearlogs - Clear logs
+
+⚡ *Example Attack:*
+`/maut 1.1.1.1 80 60`
+"""
+    bot.reply_to(message, help_text, parse_mode="Markdown")
+
+def rules_command(message):
+    """Show usage rules"""
+    rules = """
+📜 *Usage Rules* 📜
+
+1. Max attack time: 180 seconds
+2. 5 minutes cooldown
+3. No concurrent attacks
+4. No illegal targets
+
+Violations will result in ban.
+"""
+    bot.reply_to(message, rules, parse_mode="Markdown")
+
 @bot.message_handler(commands=['add', 'remove', 'allusers', 'logs', 'clearlogs', 'mylogs', 'help', 'rules'])
 def handle_other_commands(message):
     """Handle all other commands with proper locking"""
@@ -533,9 +729,6 @@ def handle_other_commands(message):
                 
         except Exception as e:
             bot.reply_to(message, f"❌ Error processing command: {str(e)}")
-
-# [Previous command functions like add_user, remove_user, etc. remain the same]
-# [Include all the other command functions from your original code]
 
 def main():
     """Main function to initialize and run the bot"""
