@@ -502,6 +502,9 @@ def handle_buttons(call):
         
         bot.send_message(call.message.chat.id, "⚡ Send new attack command:\n`/maut <ip> <port> <time>`", parse_mode="Markdown")
     
+    elif call.data.startswith("admin_"):
+        handle_admin_buttons(call)
+    
     bot.answer_callback_query(call.id)
 
 @bot.message_handler(commands=['mystats'])
@@ -616,6 +619,7 @@ def is_admin(user_id):
 def admin_panel(message):
     user_id = str(message.chat.id)
     if not is_admin(user_id):
+        bot.reply_to(message, "❌ You are not authorized to use this command.")
         return
     
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -637,7 +641,6 @@ def admin_panel(message):
         reply_markup=markup
     )
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
 def handle_admin_buttons(call):
     user_id = str(call.from_user.id)
     if not is_admin(user_id):
@@ -681,11 +684,15 @@ def handle_admin_buttons(call):
 - Total: {total_referrals}
 {attack_info}
 """
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="admin_back"))
+        
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=response,
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=markup
         )
     
     elif call.data == "admin_users":
