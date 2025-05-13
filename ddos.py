@@ -28,7 +28,7 @@ OWNER_USERNAME = "seedhe_maut_bot"
 BLOCKED_PORTS = [8700, 20000, 443, 17500, 9031, 20002, 20001]
 MAX_ATTACK_DURATION = 600  # 10 minutes
 THREADS_COUNT = 950
-COOLDOWN_DURATION = 6  # 10 minutes cooldown
+COOLDOWN_DURATION = 300  # 10 minutes cooldown
 MAX_CONCURRENT_ATTACKS = 3  # Maximum concurrent attacks per user
 MAX_DAILY_ATTACKS = 10  # Maximum attacks per day per user
 
