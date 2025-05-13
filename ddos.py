@@ -506,14 +506,20 @@ def admin_commands(message):
 
             try:
                 target_user_id = int(cmd_parts[1])
-                plan = min(max(int(cmd_parts[2]), 1), 3)  # Clamp between 1-3
+                plan = int(cmd_parts[2])
                 days = int(cmd_parts[3])
 
+                # Validate plan level
+                if plan not in [1, 2, 3]:
+                    bot.send_message(message.chat.id, "❌ *Invalid plan level!* Must be 1, 2, or 3", parse_mode='Markdown')
+                    return
+
                 valid_until = (datetime.now() + timedelta(days=days)).date().isoformat() if days > 0 else "Lifetime"
+                
                 users_collection.update_one(
                     {"user_id": target_user_id},
                     {"$set": {
-                        "plan": plan,
+                        "plan": plan,  # This is the fixed line - now properly sets the plan level
                         "valid_until": valid_until,
                         "approved_by": message.from_user.id,
                         "approved_at": datetime.now().isoformat()
@@ -524,7 +530,7 @@ def admin_commands(message):
                 response_msg = f"""
 ✅ *User Approved*
 🔹 *ID:* `{target_user_id}`
-🔹 *Plan:* {plan}
+🔹 *Plan Level:* {plan}
 🔹 *Duration:* {days} days
 🔹 *Valid Until:* {valid_until}
 """
