@@ -27,30 +27,11 @@ ADMIN_IDS = [8167507955]
 OWNER_USERNAME = "seedhe_maut_bot"
 BLOCKED_PORTS = [8700, 20000, 443, 17500, 9031, 20002, 20001]
 
-# Plan configurations
-PLAN_CONFIG = {
-    1: {
-        'max_duration': 240,  # 5 minutes
-        'threads': 900,
-        'max_concurrent': 3,
-        'max_daily': 10,
-        'cooldown': 300  # 5 minutes
-    },
-    2: {
-        'max_duration': 350,  # 10 minutes
-        'threads': 950,
-        'max_concurrent': 5,
-        'max_daily': 20,
-        'cooldown': 240  # 4 minutes
-    },
-    3: {
-        'max_duration': 600,  # 30 minutes
-        'threads': 950,
-        'max_concurrent': 10,
-        'max_daily': 50,
-        'cooldown': 300  # 3 minutes
-    }
-}
+# Single plan configuration
+MAX_ATTACK_DURATION = 600  # 10 minutes
+THREADS_COUNT = 2000
+COOLDOWN_DURATION = 300  # 5 minutes cooldown
+MAX_CONCURRENT_ATTACKS = 3  # Maximum concurrent attacks per user
 
 # Initialize MongoDB
 try:
@@ -78,7 +59,7 @@ def is_user_admin(user_id):
 def check_user_approval(user_id):
     try:
         user_data = users_collection.find_one({"user_id": user_id})
-        if user_data and user_data.get('plan', 0) > 0:
+        if user_data and user_data.get('approved', False):
             valid_until = user_data.get('valid_until', "")
             if valid_until == "" or valid_until.lower() == "lifetime":
                 return True
@@ -87,18 +68,6 @@ def check_user_approval(user_id):
     except Exception as e:
         logger.error(f"Error checking user approval: {e}")
         return False
-
-def get_user_plan(user_id):
-    try:
-        user_data = users_collection.find_one({"user_id": user_id})
-        return user_data.get('plan', 0) if user_data else 0
-    except Exception as e:
-        logger.error(f"Error getting user plan: {e}")
-        return 0
-
-def get_plan_config(user_id):
-    plan = get_user_plan(user_id)
-    return PLAN_CONFIG.get(plan, PLAN_CONFIG[1])  # Default to plan 1 if invalid
 
 def check_cooldown(user_id):
     try:
@@ -119,30 +88,15 @@ def get_active_attack_count(user_id):
         logger.error(f"Error getting active attack count: {e}")
         return 0
 
-def get_daily_attack_count(user_id):
-    try:
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        return attack_logs_collection.count_documents({
-            "user_id": user_id,
-            "started_at": {"$gte": today}
-        })
-    except Exception as e:
-        logger.error(f"Error getting daily attack count: {e}")
-        return 0
-
 def run_attack_command(user_id, target_ip, target_port):
     try:
-        plan_config = get_plan_config(user_id)
-        max_duration = plan_config['max_duration']
-        threads = plan_config['threads']
-        
         # Record the attack start
         attack_id = active_attacks_collection.insert_one({
             "user_id": user_id,
             "target_ip": target_ip,
             "target_port": target_port,
             "started_at": datetime.now(),
-            "ends_at": datetime.now() + timedelta(seconds=max_duration)
+            "ends_at": datetime.now() + timedelta(seconds=MAX_ATTACK_DURATION)
         }).inserted_id
 
         # Log the attack
@@ -151,12 +105,12 @@ def run_attack_command(user_id, target_ip, target_port):
             "target_ip": target_ip,
             "target_port": target_port,
             "started_at": datetime.now(),
-            "duration": max_duration,
-            "threads": threads
+            "duration": MAX_ATTACK_DURATION,
+            "threads": THREADS_COUNT
         })
 
         process = subprocess.Popen(
-            ["./maut", target_ip, str(target_port), str(max_duration), str(threads)],
+            ["./maut", target_ip, str(target_port), str(MAX_ATTACK_DURATION), str(THREADS_COUNT)],
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE
         )
@@ -167,7 +121,7 @@ def run_attack_command(user_id, target_ip, target_port):
         
         # Wait for attack to complete or timeout
         try:
-            process.wait(timeout=max_duration)
+            process.wait(timeout=MAX_ATTACK_DURATION)
         except subprocess.TimeoutExpired:
             process.kill()
             logger.info(f"Attack on {target_ip}:{target_port} timed out and was stopped")
@@ -180,7 +134,7 @@ def run_attack_command(user_id, target_ip, target_port):
         # Set cooldown
         cooldowns_collection.update_one(
             {"user_id": user_id},
-            {"$set": {"ends_at": datetime.now() + timedelta(seconds=plan_config['cooldown'])}},
+            {"$set": {"ends_at": datetime.now() + timedelta(seconds=COOLDOWN_DURATION)}},
             upsert=True
         )
         
@@ -235,7 +189,6 @@ def create_main_menu():
         InlineKeyboardButton("🚀 Start Attack", callback_data="start_attack"),
         InlineKeyboardButton("⏹ Stop Attack", callback_data="stop_attack"),
         InlineKeyboardButton("ℹ️ Help", callback_data="help"),
-        InlineKeyboardButton("📊 My Plan", callback_data="my_plan")
     )
     return markup
 
@@ -254,8 +207,9 @@ def send_welcome_message(chat_id):
 
 🔹 *Features:* 
    - Powerful Layer4 DDoS protection
-   - Easy-to-use interface
-   - Multiple plan options
+   - 10 minute attack duration
+   - Unlimited attacks
+   - {THREADS_COUNT} threads
 
 📌 *Note:* This bot is for authorized testing only. Misuse will result in ban.
 
@@ -272,10 +226,9 @@ def send_help_message(chat_id):
 /help - Show this help message
 /attack - Start a new attack
 /mystats - Show your usage statistics
-/buy - Get information about plans
 
 *Admin Commands* (Admin only):
-/approve <user_id> <plan> <days> - Approve user
+/approve <user_id> <days> - Approve user
 /disapprove <user_id> - Remove user approval
 /stats - Show bot statistics
 
@@ -283,50 +236,10 @@ def send_help_message(chat_id):
 """
     bot.send_message(chat_id, help_msg, parse_mode='Markdown')
 
-def send_plan_info(chat_id, user_id):
-    plan = get_user_plan(user_id)
-    plan_config = get_plan_config(user_id)
-    
-    if plan == 0:
-        plan_msg = f"""
-📊 *Your Plan: FREE*
-
-🔹 *Limitations:*
-- Limited attack duration
-- Lower priority
-- No support
-- Max {PLAN_CONFIG[1]['max_daily']} attacks per day
-
-💎 *Upgrade your plan for full features!*
-
-👤 *Contact:* @{OWNER_USERNAME}
-"""
-    else:
-        user_data = users_collection.find_one({"user_id": user_id})
-        valid_until = user_data.get('valid_until', "Lifetime")
-        plan_msg = f"""
-📊 *Your Plan: PREMIUM (Level {plan})*
-
-🔹 *Benefits:*
-- Max Duration: {plan_config['max_duration']//60} minutes
-- Threads: {plan_config['threads']}
-- Concurrent Attacks: {plan_config['max_concurrent']}
-- Daily Attacks: {plan_config['max_daily']}
-- Cooldown: {plan_config['cooldown']//60} minutes
-- Premium support
-
-⏳ *Valid Until:* {valid_until}
-
-Thank you for being a premium user!
-"""
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("💎 Upgrade Plan", url=f"tg://user?id={ADMIN_IDS[0]}"))
-    bot.send_message(chat_id, plan_msg, parse_mode='Markdown', reply_markup=markup)
-
 def show_stats(chat_id):
     try:
         total_users = users_collection.count_documents({})
-        premium_users = users_collection.count_documents({"plan": {"$gt": 0}})
+        approved_users = users_collection.count_documents({"approved": True})
         active_attacks_count = active_attacks_collection.count_documents({})
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         today_attacks = attack_logs_collection.count_documents({"started_at": {"$gte": today}})
@@ -335,7 +248,7 @@ def show_stats(chat_id):
 📊 *Bot Statistics*
 
 👥 *Total Users:* {total_users}
-💎 *Premium Users:* {premium_users}
+✅ *Approved Users:* {approved_users}
 ⚡ *Active Attacks:* {active_attacks_count}
 📅 *Today's Attacks:* {today_attacks}
 👤 *Owner:* @{OWNER_USERNAME}
@@ -404,16 +317,13 @@ def mystats_command(message):
         user_data = users_collection.find_one({"user_id": user_id}) or {}
         cooldown_remaining = check_cooldown(user_id)
         active_attacks = get_active_attack_count(user_id)
-        daily_attacks = get_daily_attack_count(user_id)
-        plan_config = get_plan_config(user_id)
         
         stats_msg = f"""
 📈 *Your Statistics*
 
-🔸 *Plan Level:* {user_data.get('plan', 0)}
+🔸 *Approved:* {'Yes' if check_user_approval(user_id) else 'No'}
 🔸 *Total Attacks:* {user_data.get('attack_count', 0)}
-🔸 *Today's Attacks:* {daily_attacks}/{plan_config['max_daily']}
-🔸 *Active Attacks:* {active_attacks}/{plan_config['max_concurrent']}
+🔸 *Active Attacks:* {active_attacks}/{MAX_CONCURRENT_ATTACKS}
 🔸 *Cooldown:* {format_time(cooldown_remaining) if cooldown_remaining > 0 else "Ready"}
 🔸 *Last Attack:* {user_data.get('last_attack', 'Never')}
 🔸 *Account Valid Until:* {user_data.get('valid_until', 'Not specified')}
@@ -434,64 +344,12 @@ def stats_command(message):
     except Exception as e:
         logger.error(f"Error in stats_command: {e}")
 
-@bot.message_handler(commands=['buy'])
-def buy_command(message):
-    try:
-        plans_msg = f"""
-💎 *Available Plans* 💎
-
-1️⃣ *Basic Plan* ($10/month)
-- {PLAN_CONFIG[1]['max_concurrent']} concurrent attacks
-- {PLAN_CONFIG[1]['max_duration']//60} minute max duration
-- {PLAN_CONFIG[1]['threads']} threads
-- {PLAN_CONFIG[1]['max_daily']} daily attacks
-- {PLAN_CONFIG[1]['cooldown']//60} minute cooldown
-- Standard support
-
-2️⃣ *Pro Plan* ($25/month)
-- {PLAN_CONFIG[2]['max_concurrent']} concurrent attacks
-- {PLAN_CONFIG[2]['max_duration']//60} minute max duration
-- {PLAN_CONFIG[2]['threads']} threads
-- {PLAN_CONFIG[2]['max_daily']} daily attacks
-- {PLAN_CONFIG[2]['cooldown']//60} minute cooldown
-- Priority support
-
-3️⃣ *VIP Plan* ($50/month)
-- {PLAN_CONFIG[3]['max_concurrent']} concurrent attacks
-- {PLAN_CONFIG[3]['max_duration']//60} minute max duration
-- {PLAN_CONFIG[3]['threads']} threads
-- {PLAN_CONFIG[3]['max_daily']} daily attacks
-- {PLAN_CONFIG[3]['cooldown']//60} minute cooldown
-- 24/7 dedicated support
-
-📌 *Custom plans available*
-
-👤 *Contact:* @{OWNER_USERNAME} to purchase or for more information.
-"""
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📩 Contact Owner", url=f"tg://user?id={ADMIN_IDS[0]}"))
-        bot.send_message(message.chat.id, plans_msg, parse_mode='Markdown', reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Error in buy_command: {e}")
-
 @bot.message_handler(commands=['attack'])
 def attack_command(message):
     try:
         user_id = message.from_user.id
         if not check_user_approval(user_id):
             bot.send_message(message.chat.id, "🔒 You don't have permission to use this feature!")
-            return
-
-        plan_config = get_plan_config(user_id)
-        
-        # Check daily attack limit
-        daily_attacks = get_daily_attack_count(user_id)
-        if daily_attacks >= plan_config['max_daily']:
-            bot.send_message(
-                message.chat.id,
-                f"⚠️ *Daily attack limit reached* ({daily_attacks}/{plan_config['max_daily']})",
-                parse_mode='Markdown'
-            )
             return
 
         # Check cooldown
@@ -506,15 +364,15 @@ def attack_command(message):
 
         # Check concurrent attacks
         active_count = get_active_attack_count(user_id)
-        if active_count >= plan_config['max_concurrent']:
+        if active_count >= MAX_CONCURRENT_ATTACKS:
             bot.send_message(
                 message.chat.id,
-                f"⚠️ *Maximum concurrent attacks reached* ({active_count}/{plan_config['max_concurrent']})",
+                f"⚠️ *Maximum concurrent attacks reached* ({active_count}/{MAX_CONCURRENT_ATTACKS})",
                 parse_mode='Markdown'
             )
             return
 
-        msg = bot.send_message(message.chat.id, f"""
+        msg = bot.send_message(message.chat.id, """
 🎯 *Attack Setup*
 
 Please provide the target in this format:
@@ -523,9 +381,7 @@ Please provide the target in this format:
 Example:
 `1.1.1.1 80`
 
-Your plan allows:
-- Max duration: {plan_config['max_duration']//60} minutes
-- Threads: {plan_config['threads']}
+Attack will run for 10 minutes with 2000 threads.
 """, parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_attack_ip_port)
     except Exception as e:
@@ -544,26 +400,20 @@ def admin_commands(message):
         
         if command == 'approve':
             cmd_parts = message.text.split()
-            if len(cmd_parts) != 4:
-                bot.send_message(message.chat.id, "ℹ️ *Usage:* `/approve <user_id> <plan(1-3)> <days>`", parse_mode='Markdown')
+            if len(cmd_parts) != 3:
+                bot.send_message(message.chat.id, "ℹ️ *Usage:* `/approve <user_id> <days>`", parse_mode='Markdown')
                 return
 
             try:
                 target_user_id = int(cmd_parts[1])
-                plan = int(cmd_parts[2])
-                days = int(cmd_parts[3])
-
-                # Validate plan level
-                if plan not in [1, 2, 3]:
-                    bot.send_message(message.chat.id, "❌ *Invalid plan level!* Must be 1, 2, or 3", parse_mode='Markdown')
-                    return
+                days = int(cmd_parts[2])
 
                 valid_until = (datetime.now() + timedelta(days=days)).date().isoformat() if days > 0 else "Lifetime"
                 
                 users_collection.update_one(
                     {"user_id": target_user_id},
                     {"$set": {
-                        "plan": plan,
+                        "approved": True,
                         "valid_until": valid_until,
                         "approved_by": message.from_user.id,
                         "approved_at": datetime.now().isoformat()
@@ -574,7 +424,6 @@ def admin_commands(message):
                 response_msg = f"""
 ✅ *User Approved*
 🔹 *ID:* `{target_user_id}`
-🔹 *Plan Level:* {plan}
 🔹 *Duration:* {days} days
 🔹 *Valid Until:* {valid_until}
 """
@@ -585,16 +434,19 @@ def admin_commands(message):
                     bot.send_message(target_user_id, f"""
 🎉 *Your account has been approved!*
 
-🔹 *Plan Level:* {plan}
 🔹 *Valid Until:* {valid_until}
 
-You can now use all bot features with your plan limits.
+You can now use all bot features:
+- 10 minute attack duration
+- Unlimited attacks
+- {THREADS_COUNT} threads
+- {MAX_CONCURRENT_ATTACKS} concurrent attacks
 """, parse_mode='Markdown')
                 except Exception as e:
                     logger.error(f"Could not notify user {target_user_id}: {e}")
 
             except ValueError:
-                bot.send_message(message.chat.id, "❌ Invalid user ID, plan, or days value", parse_mode='Markdown')
+                bot.send_message(message.chat.id, "❌ Invalid user ID or days value", parse_mode='Markdown')
             except Exception as e:
                 bot.send_message(message.chat.id, f"❌ Error: {str(e)}", parse_mode='Markdown')
                 logger.error(f"Error in approve command: {e}")
@@ -610,7 +462,7 @@ You can now use all bot features with your plan limits.
                 users_collection.update_one(
                     {"user_id": target_user_id},
                     {"$set": {
-                        "plan": 0, 
+                        "approved": False, 
                         "valid_until": "", 
                         "disapproved_at": datetime.now().isoformat(),
                         "disapproved_by": message.from_user.id
@@ -623,7 +475,7 @@ You can now use all bot features with your plan limits.
                     bot.send_message(target_user_id, """
 ⚠️ *Your account access has been revoked*
 
-Your plan has been downgraded to Free. 
+You can no longer use the bot features.
 Contact admin for more information.
 """, parse_mode='Markdown')
                 except Exception as e:
@@ -650,18 +502,6 @@ def callback_handler(call):
                 bot.answer_callback_query(call.id, "🔒 You don't have permission to use this feature!", show_alert=True)
                 return
 
-            plan_config = get_plan_config(user_id)
-            
-            # Check daily attack limit
-            daily_attacks = get_daily_attack_count(user_id)
-            if daily_attacks >= plan_config['max_daily']:
-                bot.answer_callback_query(
-                    call.id,
-                    f"⚠️ Daily attack limit reached ({daily_attacks}/{plan_config['max_daily']})",
-                    show_alert=True
-                )
-                return
-
             # Check cooldown
             cooldown_remaining = check_cooldown(user_id)
             if cooldown_remaining > 0:
@@ -674,15 +514,15 @@ def callback_handler(call):
 
             # Check concurrent attacks
             active_count = get_active_attack_count(user_id)
-            if active_count >= plan_config['max_concurrent']:
+            if active_count >= MAX_CONCURRENT_ATTACKS:
                 bot.answer_callback_query(
                     call.id,
-                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{plan_config['max_concurrent']})",
+                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{MAX_CONCURRENT_ATTACKS})",
                     show_alert=True
                 )
                 return
 
-            msg = bot.send_message(call.message.chat.id, f"""
+            msg = bot.send_message(call.message.chat.id, """
 🎯 *Attack Setup*
 
 Please provide the target in this format:
@@ -691,9 +531,7 @@ Please provide the target in this format:
 Example:
 `1.1.1.1 80`
 
-Your plan allows:
-- Max duration: {plan_config['max_duration']//60} minutes
-- Threads: {plan_config['threads']}
+Attack will run for 10 minutes with 2000 threads.
 """, parse_mode='Markdown')
             bot.register_next_step_handler(msg, process_attack_ip_port)
             bot.answer_callback_query(call.id)
@@ -718,10 +556,6 @@ Your plan allows:
                 
         elif call.data == "help":
             send_help_message(call.message.chat.id)
-            bot.answer_callback_query(call.id)
-            
-        elif call.data == "my_plan":
-            send_plan_info(call.message.chat.id, call.from_user.id)
             bot.answer_callback_query(call.id)
             
         elif call.data == "user_management":
@@ -779,7 +613,6 @@ Your plan allows:
                 return
                 
             target_ip, target_port = attack_details
-            plan_config = get_plan_config(user_id)
             
             # Check again in case conditions changed
             cooldown_remaining = check_cooldown(user_id)
@@ -791,21 +624,11 @@ Your plan allows:
                 )
                 return
 
-            # Check daily attack limit
-            daily_attacks = get_daily_attack_count(user_id)
-            if daily_attacks >= plan_config['max_daily']:
-                bot.answer_callback_query(
-                    call.id,
-                    f"⚠️ Daily attack limit reached ({daily_attacks}/{plan_config['max_daily']})",
-                    show_alert=True
-                )
-                return
-
             active_count = get_active_attack_count(user_id)
-            if active_count >= plan_config['max_concurrent']:
+            if active_count >= MAX_CONCURRENT_ATTACKS:
                 bot.answer_callback_query(
                     call.id,
-                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{plan_config['max_concurrent']})",
+                    f"⚠️ Maximum concurrent attacks reached ({active_count}/{MAX_CONCURRENT_ATTACKS})",
                     show_alert=True
                 )
                 return
@@ -833,11 +656,11 @@ Your plan allows:
 ✅ *Attack Launched Successfully!*
 
 🔹 *Target:* `{target_ip}:{target_port}`
-🔹 *Duration:* `{plan_config['max_duration']//60} minutes`
-🔹 *Threads:* `{plan_config['threads']}`
-🔹 *Cooldown:* `{plan_config['cooldown']//60} minutes`
+🔹 *Duration:* `10 minutes`
+🔹 *Threads:* `2000`
+🔹 *Cooldown:* `5 minutes`
 
-⚠️ *Attack will automatically stop after {plan_config['max_duration']//60} minutes*
+⚠️ *Attack will automatically stop after 10 minutes*
 """,
                         call.message.chat.id,
                         call.message.message_id,
@@ -859,7 +682,7 @@ Your plan allows:
             
         elif call.data == "admin_approve":
             if is_user_admin(call.from_user.id):
-                bot.send_message(call.message.chat.id, "ℹ️ *Usage:* `/approve <user_id> <plan(1-3)> <days>`", parse_mode='Markdown')
+                bot.send_message(call.message.chat.id, "ℹ️ *Usage:* `/approve <user_id> <days>`", parse_mode='Markdown')
                 bot.answer_callback_query(call.id)
             else:
                 bot.answer_callback_query(call.id, "❌ Access denied", show_alert=True)
@@ -874,14 +697,14 @@ Your plan allows:
         elif call.data == "admin_list_users":
             if is_user_admin(call.from_user.id):
                 try:
-                    premium_users = list(users_collection.find({"plan": {"$gt": 0}}).limit(10))
+                    approved_users = list(users_collection.find({"approved": True}).limit(10))
                     users_list = "\n".join([
-                        f"🔹 `{u['user_id']}` - Plan {u['plan']} (Until {u.get('valid_until', '?')})"
-                        for u in premium_users
+                        f"🔹 `{u['user_id']}` - Until {u.get('valid_until', '?')}"
+                        for u in approved_users
                     ])
                     bot.send_message(
                         call.message.chat.id,
-                        f"💎 *Premium Users*\n{users_list}\n\nTotal: {len(premium_users)}",
+                        f"✅ *Approved Users*\n{users_list}\n\nTotal: {len(approved_users)}",
                         parse_mode='Markdown'
                     )
                     bot.answer_callback_query(call.id)
@@ -923,7 +746,6 @@ def process_attack_ip_port(message):
             return
 
         user_attack_details[user_id] = (target_ip, target_port)
-        plan_config = get_plan_config(user_id)
         
         # Confirm attack details
         confirm_msg = f"""
@@ -931,9 +753,9 @@ def process_attack_ip_port(message):
 
 🔹 *Target IP:* `{target_ip}`
 🔹 *Target Port:* `{target_port}`
-🔹 *Duration:* `{plan_config['max_duration']//60} minutes`
-🔹 *Threads:* `{plan_config['threads']}`
-🔹 *Cooldown After:* `{plan_config['cooldown']//60} minutes`
+🔹 *Duration:* `10 minutes`
+🔹 *Threads:* `2000`
+🔹 *Cooldown After:* `5 minutes`
 
 ⚠️ *Are you sure you want to proceed?*
 """
